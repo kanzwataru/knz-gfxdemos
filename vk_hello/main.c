@@ -27,6 +27,7 @@
 struct VK {
 	VkInstance instance;
 	VkPhysicalDevice physical_device;
+	VkDevice device;
 
 	uint32_t queue_graphics_idx;
 };
@@ -42,89 +43,108 @@ static void panic(const char *message)
 	abort();
 }
 
-static void vk_init_instance(struct VK *vk)
-{
-	/* extensions */
-	const char *extension_names[256];
-	uint32_t extension_count = countof(extension_names);
-
-	SDL_Vulkan_GetInstanceExtensions(s_window, &extension_count, extension_names);
-
-	/* layers */
-	VkLayerProperties available_layers[256];
-	uint32_t available_layer_count = countof(available_layers);
-
-	vkEnumerateInstanceLayerProperties(&available_layer_count, available_layers);
-
-	const char *layer_names[] = {
-		"VK_LAYER_KHRONOS_validation"
-	};
-	uint32_t layer_count = countof(layer_names);
-
-	static_assert(countof(layer_names) == 1, "Edit the code below to support more");
-	bool found = false;
-	for(uint32_t i = 0; i < available_layer_count; ++i) {
-		if(0 == strcmp(available_layers[i].layerName, layer_names[0])) {
-			found = true;
-			break;
-		}
-	}
-
-	if(!found) {
-		layer_count = 0;
-	}
-
-	/* instance */
-	VkInstanceCreateInfo instance_create_info = {
-		.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-		.enabledLayerCount = layer_count,
-		.ppEnabledLayerNames = layer_names,
-		.enabledExtensionCount = extension_count,
-		.ppEnabledExtensionNames = extension_names
-	};
-
-	VK_CHECK(vkCreateInstance(&instance_create_info, NULL, &vk->instance));
-}
-
-static void vk_init_physical_device(struct VK *vk)
-{
-	VkPhysicalDevice devices[256];
-	uint32_t device_count = countof(devices);
-
-	vkEnumeratePhysicalDevices(vk->instance, &device_count, devices);
-	CHECK(device_count, "No GPUs found");
-
-	// TODO: Favour discrete GPU over integrated
-	vk->physical_device = devices[0];
-}
-
-static void vk_init_queues(struct VK *vk)
-{
-	VkQueueFamilyProperties queue_families[32];
-	uint32_t queue_families_count = countof(queue_families);
-	vkGetPhysicalDeviceQueueFamilyProperties(vk->physical_device, &queue_families_count, queue_families);
-
-	bool found = false;
-	for(uint32_t i = 0; i < queue_families_count; ++i) {
-		if(queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-			found = true;
-			vk->queue_graphics_idx = i;
-			break;
-		}
-	}
-
-	CHECK(found, "No graphics queue found");
-}
-
 static void vk_init(struct VK *vk)
 {
-	vk_init_instance(vk);
-	vk_init_physical_device(vk);
-	vk_init_queues(vk);
+	/* instance */
+	{
+		/* extensions */
+		const char *extension_names[256];
+		uint32_t extension_count = countof(extension_names);
+
+		SDL_Vulkan_GetInstanceExtensions(s_window, &extension_count, extension_names);
+
+		/* layers */
+		VkLayerProperties available_layers[256];
+		uint32_t available_layer_count = countof(available_layers);
+
+		vkEnumerateInstanceLayerProperties(&available_layer_count, available_layers);
+
+		const char *layer_names[] = {
+			"VK_LAYER_KHRONOS_validation"
+		};
+		uint32_t layer_count = countof(layer_names);
+
+		static_assert(countof(layer_names) == 1, "Edit the code below to support more");
+		bool found = false;
+		for(uint32_t i = 0; i < available_layer_count; ++i) {
+			if(0 == strcmp(available_layers[i].layerName, layer_names[0])) {
+				found = true;
+				break;
+			}
+		}
+
+		if(!found) {
+			layer_count = 0;
+		}
+
+		/* instance */
+		VkInstanceCreateInfo instance_create_info = {
+			.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+			.enabledLayerCount = layer_count,
+			.ppEnabledLayerNames = layer_names,
+			.enabledExtensionCount = extension_count,
+			.ppEnabledExtensionNames = extension_names
+		};
+
+		VK_CHECK(vkCreateInstance(&instance_create_info, NULL, &vk->instance));
+	}
+
+	/* physical device */
+	{
+		VkPhysicalDevice devices[256];
+		uint32_t device_count = countof(devices);
+
+		vkEnumeratePhysicalDevices(vk->instance, &device_count, devices);
+		CHECK(device_count, "No GPUs found");
+
+		// TODO: Favour discrete GPU over integrated
+		vk->physical_device = devices[0];
+	}
+
+	/* queues */
+	{
+		VkQueueFamilyProperties queue_families[32];
+		uint32_t queue_families_count = countof(queue_families);
+		vkGetPhysicalDeviceQueueFamilyProperties(vk->physical_device, &queue_families_count, queue_families);
+
+		bool found = false;
+		for(uint32_t i = 0; i < queue_families_count; ++i) {
+			if(queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+				found = true;
+				vk->queue_graphics_idx = i;
+				break;
+			}
+		}
+
+		CHECK(found, "No graphics queue found");
+	}
+
+	/* logical device */
+	{
+		float graphics_queue_priority = 1.0f;
+
+		VkDeviceQueueCreateInfo queue_create_info = {
+			.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+			.queueFamilyIndex = vk->queue_graphics_idx,
+			.queueCount = 1,
+			.pQueuePriorities = &graphics_queue_priority
+		};
+
+		VkPhysicalDeviceFeatures device_features = {0};
+
+		VkDeviceCreateInfo create_info = {
+			.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+			.queueCreateInfoCount = 1,
+			.pQueueCreateInfos = &queue_create_info,
+		};
+
+		VK_CHECK(vkCreateDevice(vk->physical_device, &create_info, NULL, &vk->device));
+	}
 }
 
 static void vk_destroy(struct VK *vk)
 {
+	vkDestroyDevice(vk->device, NULL);
 	vkDestroyInstance(vk->instance, NULL);
 }
 
