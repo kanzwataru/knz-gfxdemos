@@ -28,7 +28,14 @@ struct VK {
 	VkInstance instance;
 	VkPhysicalDevice physical_device;
 	VkDevice device;
+
 	VkSurfaceKHR surface;
+	VkFormat swapchain_format;
+	VkExtent2D swapchain_extent;
+	VkSwapchainKHR swapchain;
+	VkImage swapchain_images[32];
+	VkImageView swapchain_image_views[32];
+	uint32_t swapchain_image_count;
 
 	VkQueue queue_present;
 
@@ -187,7 +194,9 @@ static void vk_init(struct VK *vk)
 		VkDeviceCreateInfo create_info = {
 			.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 			.queueCreateInfoCount = queue_count,
-			.pQueueCreateInfos = queue_infos
+			.pQueueCreateInfos = queue_infos,
+			.enabledExtensionCount = extension_count,
+			.ppEnabledExtensionNames = extension_names
 		};
 
 		VK_CHECK(vkCreateDevice(vk->physical_device, &create_info, NULL, &vk->device));
@@ -211,6 +220,7 @@ static void vk_init(struct VK *vk)
 
 		int width, height;
 		SDL_Vulkan_GetDrawableSize(s_window, &width, &height);
+		VkExtent2D extent = {width, height};
 
 		/* find */
 		VkSurfaceFormatKHR format;
@@ -239,11 +249,76 @@ static void vk_init(struct VK *vk)
 
 		/* create */
 		uint32_t image_count = capabilities.minImageCount;
+
+		VkSwapchainCreateInfoKHR create_info = {
+			.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+			.surface = vk->surface,
+			.minImageCount = image_count,
+			.imageFormat = format.format,
+			.imageColorSpace = format.colorSpace,
+			.imageExtent = extent,
+			.imageArrayLayers = 1,
+			.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+			.preTransform = capabilities.currentTransform,
+			.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+			.presentMode = mode,
+			.clipped = VK_TRUE,
+			.oldSwapchain = VK_NULL_HANDLE
+		};
+
+		if(vk->queue_graphics_idx != vk->queue_present_idx) {
+			uint32_t queue_family_indices[] = {
+				vk->queue_graphics_idx,
+				vk->queue_present_idx
+			};
+
+			create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+			create_info.queueFamilyIndexCount = 2;
+			create_info.pQueueFamilyIndices = queue_family_indices;
+		}
+		else {
+			create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		}
+
+		VK_CHECK(vkCreateSwapchainKHR(vk->device, &create_info, NULL, &vk->swapchain));
+
+		vk->swapchain_image_count = countof(vk->swapchain_images);
+		VK_CHECK(vkGetSwapchainImagesKHR(vk->device, vk->swapchain, &vk->swapchain_image_count, vk->swapchain_images));
+
+		vk->swapchain_format = format.format;
+		vk->swapchain_extent = extent;
+	}
+
+	/* swapchain image views */
+	{
+		for(uint32_t i = 0; i < vk->swapchain_image_count; ++i) {
+			VkImageViewCreateInfo create_info = {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+				.image = vk->swapchain_images[i],
+				.viewType = VK_IMAGE_VIEW_TYPE_2D,
+				.format = vk->swapchain_format,
+				.components = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY },
+				.subresourceRange = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.baseMipLevel = 0,
+					.levelCount = 1,
+					.baseArrayLayer = 0,
+					.layerCount = 1
+				}
+			};
+
+			VK_CHECK(vkCreateImageView(vk->device, &create_info, NULL, &vk->swapchain_image_views[i]));
+		}
 	}
 }
 
 static void vk_destroy(struct VK *vk)
 {
+	for(uint32_t i = 0; i < vk->swapchain_image_count; ++i) {
+		vkDestroyImageView(vk->device, vk->swapchain_image_views[i], NULL);
+	}
+
+	vkDestroySwapchainKHR(vk->device, vk->swapchain, NULL);
 	vkDestroySurfaceKHR(vk->instance, vk->surface, NULL);
 	vkDestroyDevice(vk->device, NULL);
 	vkDestroyInstance(vk->instance, NULL);
