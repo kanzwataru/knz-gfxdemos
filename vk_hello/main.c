@@ -28,8 +28,12 @@ struct VK {
 	VkInstance instance;
 	VkPhysicalDevice physical_device;
 	VkDevice device;
+	VkSurfaceKHR surface;
+
+	VkQueue queue_present;
 
 	uint32_t queue_graphics_idx;
+	uint32_t queue_present_idx;
 };
 
 static struct VK s_vk;
@@ -101,49 +105,75 @@ static void vk_init(struct VK *vk)
 		vk->physical_device = devices[0];
 	}
 
-	/* queues */
+	/* surface */
+	{
+		// TODO: Make sure we are allowed to have this before VkDevice creation
+		CHECK(SDL_Vulkan_CreateSurface(s_window, vk->instance, &vk->surface), "Couldn't create surface");
+	}
+
+	/* queues query */
 	{
 		VkQueueFamilyProperties queue_families[32];
 		uint32_t queue_families_count = countof(queue_families);
 		vkGetPhysicalDeviceQueueFamilyProperties(vk->physical_device, &queue_families_count, queue_families);
 
-		bool found = false;
+		bool found_graphics = false;
+		bool found_present = false;
 		for(uint32_t i = 0; i < queue_families_count; ++i) {
-			if(queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-				found = true;
+			if(!found_graphics && queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+				found_graphics = true;
 				vk->queue_graphics_idx = i;
-				break;
+			}
+
+			VkBool32 present_support = false;
+			vkGetPhysicalDeviceSurfaceSupportKHR(vk->physical_device, i, vk->surface, &present_support);
+			if(!found_present && present_support) {
+				found_present = true;
+				vk->queue_present_idx = i;
 			}
 		}
 
-		CHECK(found, "No graphics queue found");
+		CHECK(found_graphics, "No graphics queue found");
+		CHECK(found_present, "No present queue found");
 	}
 
 	/* logical device */
 	{
-		float graphics_queue_priority = 1.0f;
-
-		VkDeviceQueueCreateInfo queue_create_info = {
-			.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-			.queueFamilyIndex = vk->queue_graphics_idx,
-			.queueCount = 1,
-			.pQueuePriorities = &graphics_queue_priority
+		VkDeviceQueueCreateInfo queue_infos[2];
+		uint32_t queue_indices[2] = {
+			vk->queue_graphics_idx,
+			vk->queue_present_idx
 		};
+
+		uint32_t queue_count = vk->queue_graphics_idx == vk->queue_present_idx ? 1 : 2;
+
+		float queue_priority = 1.0f;
+		for(uint32_t i = 0; i < queue_count; ++i) {
+			queue_infos[i] = (VkDeviceQueueCreateInfo) {
+				.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+				.queueFamilyIndex = queue_indices[i],
+				.queueCount = 1,
+				.pQueuePriorities = &queue_priority,
+			};
+		}
 
 		VkPhysicalDeviceFeatures device_features = {0};
 
 		VkDeviceCreateInfo create_info = {
 			.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-			.queueCreateInfoCount = 1,
-			.pQueueCreateInfos = &queue_create_info,
+			.queueCreateInfoCount = queue_count,
+			.pQueueCreateInfos = queue_infos,
 		};
 
 		VK_CHECK(vkCreateDevice(vk->physical_device, &create_info, NULL, &vk->device));
+
+		vkGetDeviceQueue(vk->device, vk->queue_present_idx, 0, &vk->queue_present);
 	}
 }
 
 static void vk_destroy(struct VK *vk)
 {
+	vkDestroySurfaceKHR(vk->instance, vk->surface, NULL);
 	vkDestroyDevice(vk->device, NULL);
 	vkDestroyInstance(vk->instance, NULL);
 }
