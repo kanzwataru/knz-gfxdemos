@@ -6,7 +6,7 @@ find_package(SDL2 REQUIRED)
 
 include_directories(${SDL2_INCLUDE_DIRS})
 
-add_executable(vk_hello WIN32 vk_hello/main.c)
+add_executable(vk_hello vk_hello/main.c)
 target_link_libraries(vk_hello Vulkan::Vulkan ${SDL2_LIBRARIES})
 
 if(WIN32)
@@ -14,3 +14,4 @@ if(WIN32)
 		COMMAND ${CMAKE_COMMAND} -E copy_if_different
 		"${SDL2_DIR}/lib/x64/SDL2.dll" "${CMAKE_BINARY_DIR}/SDL2.dll")
 endif()
+

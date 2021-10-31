@@ -39,7 +39,7 @@ struct VK {
 static struct VK s_vk;
 static SDL_Window *s_window;
 
-#define CHECK(x_, msg_) do { if(!x_) { panic(msg_); } } while(0);
+#define CHECK(x_, msg_) do { if(!(x_)) { panic(msg_); } } while(0);
 static void panic(const char *message)
 {
 	fprintf(stderr, "%s\n", message);
@@ -139,6 +139,29 @@ static void vk_init(struct VK *vk)
 
 	/* logical device */
 	{
+		/* extensions */
+		const char *extension_names[] = {
+			VK_KHR_SWAPCHAIN_EXTENSION_NAME
+		};
+		uint32_t extension_count = countof(extension_names);
+
+		VkExtensionProperties supported_extensions[1024];
+		uint32_t supported_extension_count = countof(supported_extensions);
+		vkEnumerateDeviceExtensionProperties(vk->physical_device, NULL, &supported_extension_count, supported_extensions);
+
+		for(uint32_t i = 0; i < extension_count; ++i) {
+			bool found = false;
+			for(uint32_t j = 0; j < supported_extension_count; ++j) {
+				if(0 == strcmp(extension_names[i], supported_extensions[j].extensionName)) {
+					found = true;
+					break;
+				}
+			}
+
+			CHECK(found, "Didn't find all required extensions");
+		}
+
+		/* queue */
 		VkDeviceQueueCreateInfo queue_infos[2];
 		uint32_t queue_indices[2] = {
 			vk->queue_graphics_idx,
@@ -157,17 +180,65 @@ static void vk_init(struct VK *vk)
 			};
 		}
 
+		/* device features */
 		VkPhysicalDeviceFeatures device_features = {0};
 
+		/* create */
 		VkDeviceCreateInfo create_info = {
 			.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 			.queueCreateInfoCount = queue_count,
-			.pQueueCreateInfos = queue_infos,
+			.pQueueCreateInfos = queue_infos
 		};
 
 		VK_CHECK(vkCreateDevice(vk->physical_device, &create_info, NULL, &vk->device));
 
 		vkGetDeviceQueue(vk->device, vk->queue_present_idx, 0, &vk->queue_present);
+	}
+
+	/* swap chain */
+	{
+		/* query */
+		VkSurfaceFormatKHR supported_formats[256];
+		uint32_t supported_formats_count = countof(supported_formats);
+		vkGetPhysicalDeviceSurfaceFormatsKHR(vk->physical_device, vk->surface, &supported_formats_count, supported_formats);
+
+		VkPresentModeKHR supported_modes[256];
+		uint32_t support_modes_count = countof(supported_modes);
+		vkGetPhysicalDeviceSurfacePresentModesKHR(vk->physical_device, vk->surface, &support_modes_count, supported_modes);
+
+		VkSurfaceCapabilitiesKHR capabilities;
+		vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vk->physical_device, vk->surface, &capabilities);
+
+		int width, height;
+		SDL_Vulkan_GetDrawableSize(s_window, &width, &height);
+
+		/* find */
+		VkSurfaceFormatKHR format;
+		bool format_found = false;
+		for(uint32_t i = 0; i < supported_formats_count; ++i) {
+			if(supported_formats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
+			   supported_formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+			{
+				format = supported_formats[i];
+				format_found = true;
+				break;
+			}
+		}
+		CHECK(format_found, "Couldn't find a suitable surface format");
+
+		VkPresentModeKHR mode;
+		bool mode_found = false;
+		for(uint32_t i = 0; i < support_modes_count; ++i) {
+			if(supported_modes[i] == VK_PRESENT_MODE_FIFO_KHR) {
+				mode = supported_modes[i];
+				mode_found = true;
+				break;
+			}
+		}
+		CHECK(mode_found, "Couldn't find a suitable present mode");
+
+		/* create */
+		uint32_t image_count = capabilities.minImageCount;
 	}
 }
 
