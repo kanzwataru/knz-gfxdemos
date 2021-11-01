@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <assert.h>
+#include <stdlib.h>
 
 #define WIDTH 1280
 #define HEIGHT 720
@@ -37,6 +38,9 @@ struct VK {
 	VkImageView swapchain_image_views[32];
 	uint32_t swapchain_image_count;
 
+	VkShaderModule shader_vert;
+	VkShaderModule shader_frag;
+
 	VkQueue queue_present;
 
 	uint32_t queue_graphics_idx;
@@ -52,6 +56,44 @@ static void panic(const char *message)
 	fprintf(stderr, "%s\n", message);
 	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Critical Error", message, NULL);
 	abort();
+}
+
+// NOTE: Allocates with malloc, must free
+static char *file_load_binary(const char *path, uint32_t *size)
+{
+	FILE *fp = fopen(path, "rb");
+	if(!fp) {
+		fprintf(stderr, "File open error: Couldn't open %s\n", path);
+		return NULL;
+	}
+
+	fseek(fp, 0, SEEK_END);
+	*size = ftell(fp);
+	rewind(fp);
+
+	char *buf = malloc(*size);
+	fread(buf, 1, *size, fp);
+
+	return buf;
+}
+
+static VkShaderModule vk_create_shader_module_from_file(struct VK *vk, const char *path)
+{
+	uint32_t size;
+	char *code = file_load_binary(path, &size);
+	CHECK(code, "Couldn't load shader file");
+
+	VkShaderModuleCreateInfo create_info = {
+		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+		.codeSize = size,
+		.pCode = (uint32_t *)code
+	};
+
+	VkShaderModule module;
+	VK_CHECK(vkCreateShaderModule(vk->device, &create_info, NULL, &module));
+
+	free(code); // TODO: Must check if it's OK to free after calling above function
+	return module;
 }
 
 static void vk_init(struct VK *vk)
@@ -310,10 +352,48 @@ static void vk_init(struct VK *vk)
 			VK_CHECK(vkCreateImageView(vk->device, &create_info, NULL, &vk->swapchain_image_views[i]));
 		}
 	}
+
+	/* shaders and pipeline layout */
+	{
+		vk->shader_vert = vk_create_shader_module_from_file(vk, "shaders/flat_vert.spv");
+		vk->shader_frag = vk_create_shader_module_from_file(vk, "shaders/flat_frag.spv");
+
+		VkPipelineShaderStageCreateInfo vert_shader_stage_info = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage = VK_SHADER_STAGE_VERTEX_BIT,
+			.module = vk->shader_vert,
+			.pName = "main"
+		};
+
+		VkPipelineShaderStageCreateInfo frag_shader_stage_info = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.module = vk->shader_frag,
+			.pName = "main"
+		};
+
+		VkPipelineVertexInputStateCreateInfo vertex_input_info = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+			// Fill these in later
+			.vertexAttributeDescriptionCount = 0,
+			.pVertexBindingDescriptions = NULL,
+			.vertexAttributeDescriptionCount = 0,
+			.pVertexAttributeDescriptions = NULL,
+		};
+
+		VkPipelineInputAssemblyStateCreateInfo input_assembly_info = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+			.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+			.primitiveRestartEnable = VK_FALSE
+		};
+	}
 }
 
 static void vk_destroy(struct VK *vk)
 {
+	vkDestroyShaderModule(vk->device, vk->shader_frag, NULL);
+	vkDestroyShaderModule(vk->device, vk->shader_vert, NULL);
+
 	for(uint32_t i = 0; i < vk->swapchain_image_count; ++i) {
 		vkDestroyImageView(vk->device, vk->swapchain_image_views[i], NULL);
 	}
