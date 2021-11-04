@@ -291,6 +291,7 @@ static void vk_init(struct VK *vk)
 
 		/* create */
 		uint32_t image_count = capabilities.minImageCount;
+		CHECK(image_count < countof(vk->swapchain_image_views), "Minimum swapchain image count is too high");
 
 		VkSwapchainCreateInfoKHR create_info = {
 			.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
@@ -324,7 +325,8 @@ static void vk_init(struct VK *vk)
 
 		VK_CHECK(vkCreateSwapchainKHR(vk->device, &create_info, NULL, &vk->swapchain));
 
-		vk->swapchain_image_count = countof(vk->swapchain_images);
+		// NOTE: There is a warning on Intel GPUs that suggests this function does actually want to be called twice
+		vk->swapchain_image_count = image_count;
 		VK_CHECK(vkGetSwapchainImagesKHR(vk->device, vk->swapchain, &vk->swapchain_image_count, vk->swapchain_images));
 
 		vk->swapchain_format = format.format;
@@ -375,7 +377,7 @@ static void vk_init(struct VK *vk)
 		VkPipelineVertexInputStateCreateInfo vertex_input_info = {
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
 			// Fill these in later
-			.vertexAttributeDescriptionCount = 0,
+			.vertexBindingDescriptionCount = 0,
 			.pVertexBindingDescriptions = NULL,
 			.vertexAttributeDescriptionCount = 0,
 			.pVertexAttributeDescriptions = NULL,
