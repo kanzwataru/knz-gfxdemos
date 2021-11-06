@@ -13,6 +13,8 @@ if(WIN32)
 	add_custom_command(TARGET vk_hello POST_BUILD
 		COMMAND ${CMAKE_COMMAND} -E copy_if_different
 		"${SDL2_DIR}/lib/x64/SDL2.dll" "${CMAKE_BINARY_DIR}/SDL2.dll")
+else()
+    target_link_libraries(vk_hello m)
 endif()
 
 # Based on https://www.reddit.com/r/vulkan/comments/kbaxlz/what_is_your_workflow_when_compiling_shader_files/

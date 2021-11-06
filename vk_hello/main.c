@@ -8,22 +8,11 @@
 #include <string.h>
 #include <assert.h>
 #include <stdlib.h>
+#include <math.h>
 
 #define WIDTH 1280
 #define HEIGHT 720
-
-#define countof(x) (sizeof(x) / sizeof(x[0]))
-
-#define VK_CHECK(x_) \
-	do {\
-		VkResult err = x_;\
-		if(err != VK_SUCCESS) {\
-			char buf[128];\
-			snprintf(buf, sizeof(buf), "Vulkan error %d at line %d\n", err, __LINE__);\
-			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Vulkan Error", buf, NULL);\
-			abort();\
-		}\
-	} while(0);
+#define TIMEOUT 1000000000
 
 struct VK {
 	/* Instances and Handles */
@@ -53,10 +42,33 @@ struct VK {
 	VkCommandBuffer command_buffer_graphics;
 
 	uint32_t queue_graphics_idx;
+
+	/* Synchronization */
+	VkSemaphore present_semaphore;
+	VkSemaphore render_semaphore;
+	VkFence render_fence;
+};
+
+struct Render_State {
+	uint64_t frame_number;
 };
 
 static struct VK s_vk;
+static struct Render_State s_render_state;
 static SDL_Window *s_window;
+
+#define countof(x) (sizeof(x) / sizeof(x[0]))
+
+#define VK_CHECK(x_) \
+	do {\
+		VkResult err = x_;\
+		if(err != VK_SUCCESS) {\
+			char buf[128];\
+			snprintf(buf, sizeof(buf), "Vulkan error %d at line %d\n", err, __LINE__);\
+			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Vulkan Error", buf, NULL);\
+			abort();\
+		}\
+	} while(0);
 
 #define CHECK(x_, msg_) do { if(!(x_)) { panic(msg_); } } while(0);
 static void panic(const char *message)
@@ -538,10 +550,32 @@ static void vk_init(struct VK *vk)
             VK_CHECK(vkCreateFramebuffer(vk->device, &framebuffer_info, NULL, &vk->framebuffers[i]));
         }
     }
+
+    /* synchronization */
+    {
+        VkFenceCreateInfo fence_info = {
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+        };
+
+        VK_CHECK(vkCreateFence(vk->device, &fence_info, NULL, &vk->render_fence));
+
+        VkSemaphoreCreateInfo semaphore_info = {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+            .flags = 0
+        };
+
+        VK_CHECK(vkCreateSemaphore(vk->device, &semaphore_info, NULL, &vk->present_semaphore));
+        VK_CHECK(vkCreateSemaphore(vk->device, &semaphore_info, NULL, &vk->render_semaphore));
+    }
 }
 
 static void vk_destroy(struct VK *vk)
 {
+    vkDestroySemaphore(vk->device, vk->render_semaphore, NULL);
+    vkDestroySemaphore(vk->device, vk->present_semaphore, NULL);
+    vkDestroyFence(vk->device, vk->render_fence, NULL);
+
     vkDestroyRenderPass(vk->device, vk->render_pass, NULL);
 
     vkDestroyPipelineLayout(vk->device, vk->pipeline_layout, NULL);
@@ -556,6 +590,93 @@ static void vk_destroy(struct VK *vk)
 	vkDestroySurfaceKHR(vk->instance, vk->surface, NULL);
 	vkDestroyDevice(vk->device, NULL);
 	vkDestroyInstance(vk->instance, NULL);
+}
+
+static void render(struct Render_State *r, struct VK *vk)
+{
+	/* sync */
+	VK_CHECK(vkWaitForFences(vk->device, 1, &vk->render_fence, true, TIMEOUT));
+	VK_CHECK(vkResetFences(vk->device, 1, &vk->render_fence));
+
+	/* SYNC: Here we pass in a semaphore that will be signalled once we have an
+	 * image available to draw into */
+	uint32_t swapchain_index;
+	VK_CHECK(vkAcquireNextImageKHR(vk->device, vk->swapchain, TIMEOUT, vk->present_semaphore, s_vk.render_fence, &swapchain_index));
+
+	/* commands */
+	VK_CHECK(vkResetCommandBuffer(vk->command_buffer_graphics, 0));
+
+	VkCommandBuffer cmdbuf = vk->command_buffer_graphics;
+
+	VkCommandBufferBeginInfo cmdbuf_begin_info = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		.pInheritanceInfo = NULL,
+		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+	};
+
+	VK_CHECK(vkBeginCommandBuffer(cmdbuf, &cmdbuf_begin_info));
+
+	/* app-specific */
+	{
+		const float flash = fabs(sinf(r->frame_number / 120.0f));
+
+		VkClearValue clear_value = {
+			.color.float32 = {0.65f * flash, 0.25f * flash, 0.15f * flash, 1.0f}
+		};
+
+		VkRenderPassBeginInfo render_pass_info = {
+			.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+			.renderPass = vk->render_pass,
+			.renderArea = {
+				.offset = {},
+				.extent = vk->swapchain_extent
+			},
+			.framebuffer = vk->framebuffers[swapchain_index],
+			.clearValueCount = 1,
+			.pClearValues = &clear_value
+		};
+
+		vkCmdBeginRenderPass(cmdbuf, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+
+		vkCmdEndRenderPass(cmdbuf);
+	}
+
+	VK_CHECK(vkEndCommandBuffer(cmdbuf));
+
+	/* submission */
+	VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+	/* SYNC: The GPU waits on the present semaphore that signals when we
+	 * have an available image to draw into.
+	 * Then the GPU will signal the render semaphore once it's done executing this cmd buffer.
+	 */
+	VkSubmitInfo submit_info = {
+		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		.pWaitDstStageMask = &wait_stage,
+		.waitSemaphoreCount = 1,
+		.pWaitSemaphores = &vk->present_semaphore,
+		.signalSemaphoreCount = 1,
+		.pSignalSemaphores = &vk->render_semaphore,
+		.commandBufferCount = 1,
+		.pCommandBuffers = &cmdbuf
+	};
+
+	/* SYNC: The render fence will be signalled once all commands are executed.
+	 * This is what we wait for at the beginning of this function.
+	 */
+	VK_CHECK(vkQueueSubmit(vk->queue_graphics, 1, &submit_info, vk->render_fence));
+
+	/* SYNC: Here the GPU will wait on the semaphore from the above queue submission before presenting */
+	VkPresentInfoKHR present_info = {
+		.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+		.pSwapchains = &vk->swapchain,
+		.swapchainCount = 1,
+		.pWaitSemaphores = &vk->render_semaphore,
+		.waitSemaphoreCount = 1,
+		.pImageIndices = &swapchain_index
+	};
+
+	VK_CHECK(vkQueuePresentKHR(vk->queue_graphics, &present_info));
 }
 
 int main(int argc, char **argv)
@@ -577,6 +698,10 @@ int main(int argc, char **argv)
 				running = false;
 			}
 		}
+
+		render(&s_render_state, &s_vk);
+
+		++s_render_state.frame_number;
 	}
 
 	vk_destroy(&s_vk);
