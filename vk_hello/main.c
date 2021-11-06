@@ -26,20 +26,27 @@
 	} while(0);
 
 struct VK {
+	/* Instances and Handles */
 	VkInstance instance;
 	VkPhysicalDevice physical_device;
 	VkDevice device;
 
+	/* Presentation */
 	VkSurfaceKHR surface;
 	VkFormat swapchain_format;
 	VkExtent2D swapchain_extent;
 	VkSwapchainKHR swapchain;
+
+	VkRenderPass render_pass;
 	VkImage swapchain_images[32];
 	VkImageView swapchain_image_views[32];
+	VkFramebuffer framebuffers[32];
 	uint32_t swapchain_image_count;
 
+    /* Pipeline and Shaders */
     VkPipelineLayout pipeline_layout;
 
+	/* Queues and Commands */
 	VkQueue queue_present;
 	VkQueue queue_graphics;
 
@@ -506,15 +513,55 @@ static void vk_init(struct VK *vk)
             .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
             .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
             .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            .stencilStoreOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
             .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
         };
+
+        VkAttachmentReference color_attachment_ref = {
+            .attachment = 0, // References the pAttachments array in the parent renderpass
+            .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+        };
+
+        VkSubpassDescription subpass = {
+            .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &color_attachment_ref
+        };
+
+        VkRenderPassCreateInfo render_pass_info = {
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+            .attachmentCount = 1,
+            .pAttachments = &color_attachment, // This is where VkAttachmentReference::attachment indexes into
+            .subpassCount = 1,
+            .pSubpasses = &subpass
+        };
+
+        VK_CHECK(vkCreateRenderPass(vk->device, &render_pass_info, NULL, &vk->render_pass));
+    }
+
+    /* framebuffers */
+    {
+        VkFramebufferCreateInfo framebuffer_info = {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass = vk->render_pass,
+            .attachmentCount = 1,
+            .width = vk->swapchain_extent.width,
+            .height = vk->swapchain_extent.height,
+            .layers = 1
+        };
+
+        for(int i = 0; i < vk->swapchain_image_count; ++i) {
+            framebuffer_info.pAttachments = &vk->swapchain_image_views[i];
+            VK_CHECK(vkCreateFramebuffer(vk->device, &framebuffer_info, NULL, &vk->framebuffers[i]));
+        }
     }
 }
 
 static void vk_destroy(struct VK *vk)
 {
+    vkDestroyRenderPass(vk->device, vk->render_pass, NULL);
+
     vkDestroyPipelineLayout(vk->device, vk->pipeline_layout, NULL);
 
     vkDestroyCommandPool(vk->device, vk->command_pool_graphics, NULL);
