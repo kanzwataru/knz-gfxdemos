@@ -14,6 +14,28 @@
 #define HEIGHT 720
 #define TIMEOUT 1000000000
 
+
+/* Deletion Queue Notes:
+ * 
+ * So far, all of Vulkan's destroy calls have the same sort of signature,
+ * with a device, handle, and allocator callbacks.
+ * All handles on this platform at least are defined to be pointers to opaque structs,
+ * so type punning the destroy function with void * is not a problem.
+ * This is something that needs to be verified on other platforms as well, at a later date.
+ */
+typedef void (*VK_Destroy_Func)(VkDevice device, void *handle, const VkAllocationCallbacks *pAllocator);
+
+struct VK_Deletion_Entry {
+    VK_Destroy_Func func;
+    void *handle;
+};
+
+struct VK_Deletion_Queue {
+    // TODO: This should chain to another block or use a dynamic allocation
+    struct VK_Deletion_Entry entries[4096];
+    int entries_top;
+};
+
 struct VK {
 	/* Instances and Handles */
 	VkInstance instance;
@@ -51,6 +73,9 @@ struct VK {
 	VkSemaphore present_semaphore;
 	VkSemaphore render_semaphore;
 	VkFence render_fence;
+	
+	/* Resources */
+	struct VK_Deletion_Queue deletion_queue;
 };
 
 struct Render_State {
@@ -119,6 +144,16 @@ static VkShaderModule vk_create_shader_module_from_file(struct VK *vk, const cha
 
 	free(code); // TODO: Must check if it's OK to free after calling above function
 	return module;
+}
+
+static void vk_push_deletable(struct VK *vk, void (*func)(), void *handle)
+{
+	CHECK(vk->deletion_queue.entries_top < countof(vk->deletion_queue.entries), "Ran out of slots on deletion queue");
+	
+	vk->deletion_queue.entries[vk->deletion_queue.entries_top++] = (struct VK_Deletion_Entry) {
+		.func = func,
+		.handle = handle
+	};
 }
 
 // TODO: Expose more options as parameters
@@ -227,6 +262,7 @@ static VkPipeline vk_create_pipeline(struct VK *vk,
 
     VkPipeline pipeline;
     VK_CHECK(vkCreateGraphicsPipelines(vk->device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &pipeline));
+    vk_push_deletable(vk, vkDestroyPipeline, pipeline);
 
     return pipeline;
 }
@@ -478,7 +514,8 @@ static void vk_init(struct VK *vk)
 		};
 
 		VK_CHECK(vkCreateSwapchainKHR(vk->device, &create_info, NULL, &vk->swapchain));
-
+		vk_push_deletable(vk, vkDestroySwapchainKHR, vk->swapchain);
+		
 		// NOTE: There is a warning on Intel GPUs that suggests this function does actually want to be called twice
 		vk->swapchain_image_count = image_count;
 		VK_CHECK(vkGetSwapchainImagesKHR(vk->device, vk->swapchain, &vk->swapchain_image_count, vk->swapchain_images));
@@ -506,6 +543,7 @@ static void vk_init(struct VK *vk)
 			};
 
 			VK_CHECK(vkCreateImageView(vk->device, &create_info, NULL, &vk->swapchain_image_views[i]));
+			vk_push_deletable(vk, vkDestroyImageView, vk->swapchain_image_views[i]);
 		}
 	}
 
@@ -518,6 +556,7 @@ static void vk_init(struct VK *vk)
 		};
 
 		VK_CHECK(vkCreateCommandPool(vk->device, &pool_info, NULL, &vk->command_pool_graphics));
+		vk_push_deletable(vk, vkDestroyCommandPool, vk->command_pool_graphics);
 
 		VkCommandBufferAllocateInfo command_alloc_info = {
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -562,6 +601,7 @@ static void vk_init(struct VK *vk)
         };
 
         VK_CHECK(vkCreateRenderPass(vk->device, &render_pass_info, NULL, &vk->render_pass));
+        vk_push_deletable(vk, vkDestroyRenderPass, vk->render_pass);
     }
 
 	/* pipeline layout */
@@ -576,6 +616,7 @@ static void vk_init(struct VK *vk)
         };
         
         VK_CHECK(vkCreatePipelineLayout(vk->device, &pipeline_layout_info, NULL, &vk->empty_pipeline_layout));
+        vk_push_deletable(vk, vkDestroyPipelineLayout, vk->empty_pipeline_layout);
     }
 
     /* framebuffers */
@@ -592,6 +633,7 @@ static void vk_init(struct VK *vk)
         for(uint32_t i = 0; i < vk->swapchain_image_count; ++i) {
             framebuffer_info.pAttachments = &vk->swapchain_image_views[i];
             VK_CHECK(vkCreateFramebuffer(vk->device, &framebuffer_info, NULL, &vk->framebuffers[i]));
+            vk_push_deletable(vk, vkDestroyFramebuffer, vk->framebuffers[i]);
         }
     }
 
@@ -603,6 +645,7 @@ static void vk_init(struct VK *vk)
         };
 
         VK_CHECK(vkCreateFence(vk->device, &fence_info, NULL, &vk->render_fence));
+        vk_push_deletable(vk, vkDestroyFence, vk->render_fence);
 
         VkSemaphoreCreateInfo semaphore_info = {
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
@@ -611,6 +654,8 @@ static void vk_init(struct VK *vk)
 
         VK_CHECK(vkCreateSemaphore(vk->device, &semaphore_info, NULL, &vk->present_semaphore));
         VK_CHECK(vkCreateSemaphore(vk->device, &semaphore_info, NULL, &vk->render_semaphore));
+        vk_push_deletable(vk, vkDestroySemaphore, vk->present_semaphore);
+        vk_push_deletable(vk, vkDestroySemaphore, vk->render_semaphore);
     }
 }
 
@@ -618,24 +663,10 @@ static void vk_destroy(struct VK *vk)
 {
     vkDeviceWaitIdle(vk->device);
 
-    vkDestroyPipeline(vk->device, vk->flat_pipeline, NULL);
+    for(int i = vk->deletion_queue.entries_top - 1; i >= 0; --i) {
+        vk->deletion_queue.entries[i].func(vk->device, vk->deletion_queue.entries[i].handle, NULL);
+    }
 
-    vkDestroySemaphore(vk->device, vk->render_semaphore, NULL);
-    vkDestroySemaphore(vk->device, vk->present_semaphore, NULL);
-    vkDestroyFence(vk->device, vk->render_fence, NULL);
-
-    vkDestroyRenderPass(vk->device, vk->render_pass, NULL);
-
-    vkDestroyPipelineLayout(vk->device, vk->empty_pipeline_layout, NULL);
-
-    vkDestroyCommandPool(vk->device, vk->command_pool_graphics, NULL);
-
-	for(uint32_t i = 0; i < vk->swapchain_image_count; ++i) {
-        vkDestroyFramebuffer(vk->device, vk->framebuffers[i], NULL);
-		vkDestroyImageView(vk->device, vk->swapchain_image_views[i], NULL);
-	}
-
-	vkDestroySwapchainKHR(vk->device, vk->swapchain, NULL);
 	vkDestroySurfaceKHR(vk->instance, vk->surface, NULL);
 	vkDestroyDevice(vk->device, NULL);
 	vkDestroyInstance(vk->instance, NULL);
