@@ -38,8 +38,7 @@ struct VK {
 	VkImageView swapchain_image_views[32];
 	uint32_t swapchain_image_count;
 
-	VkShaderModule shader_vert;
-	VkShaderModule shader_frag;
+    VkPipelineLayout pipeline_layout;
 
 	VkQueue queue_present;
 
@@ -357,20 +356,20 @@ static void vk_init(struct VK *vk)
 
 	/* shaders and pipeline layout */
 	{
-		vk->shader_vert = vk_create_shader_module_from_file(vk, "shaders/flat_vert.spv");
-		vk->shader_frag = vk_create_shader_module_from_file(vk, "shaders/flat_frag.spv");
+        VkShaderModule shader_vert = vk_create_shader_module_from_file(vk, "shaders/flat_vert.spv");
+        VkShaderModule shader_frag = vk_create_shader_module_from_file(vk, "shaders/flat_frag.spv");
 
 		VkPipelineShaderStageCreateInfo vert_shader_stage_info = {
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 			.stage = VK_SHADER_STAGE_VERTEX_BIT,
-			.module = vk->shader_vert,
+            .module = shader_vert,
 			.pName = "main"
 		};
 
 		VkPipelineShaderStageCreateInfo frag_shader_stage_info = {
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 			.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-			.module = vk->shader_frag,
+            .module = shader_frag,
 			.pName = "main"
 		};
 
@@ -388,13 +387,110 @@ static void vk_init(struct VK *vk)
 			.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
 			.primitiveRestartEnable = VK_FALSE
 		};
+
+        VkViewport viewport = {
+            .x = 0.0f,
+            .y = 0.0f,
+            .width = vk->swapchain_extent.width,
+            .height = vk->swapchain_extent.height,
+            .minDepth = 0.0f,
+            .maxDepth = 1.0f
+        };
+
+        VkRect2D scissor = {
+            .offset = {0, 0},
+            .extent = vk->swapchain_extent
+        };
+
+        VkPipelineViewportStateCreateInfo viewport_state_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            .viewportCount = 1,
+            .pViewports = &viewport,
+            .scissorCount = 1,
+            .pScissors = &scissor
+        };
+
+        VkPipelineRasterizationStateCreateInfo rasterizer_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            .depthClampEnable = VK_FALSE,
+            .rasterizerDiscardEnable = VK_FALSE,
+            .polygonMode = VK_POLYGON_MODE_FILL,
+            .lineWidth = 1.0f, // NOTE: Anything thicker than 1 needs a capability enabled
+            .cullMode = VK_CULL_MODE_BACK_BIT,
+            .frontFace = VK_FRONT_FACE_CLOCKWISE,
+            .depthBiasEnable = VK_FALSE,
+            .depthBiasConstantFactor = 0.0f,
+            .depthBiasClamp = 0.0f,
+            .depthBiasSlopeFactor = 0.0f
+        };
+
+        VkPipelineMultisampleStateCreateInfo multisampling_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            .sampleShadingEnable = VK_FALSE,
+            .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        };
+
+        VkPipelineColorBlendAttachmentState color_blend_attachment = {
+            .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+            .blendEnable = VK_FALSE,
+            .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+            .dstColorBlendFactor = VK_BLEND_FACTOR_ZERO,
+            .colorBlendOp = VK_BLEND_OP_ADD,
+            .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+            .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+            .alphaBlendOp = VK_BLEND_OP_ADD
+        };
+
+        VkPipelineColorBlendStateCreateInfo color_blending = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            .logicOpEnable = VK_FALSE,
+            .logicOp = VK_LOGIC_OP_COPY,
+            .attachmentCount = 1,
+            .pAttachments = &color_blend_attachment,
+            .blendConstants = {0, 0, 0, 0}
+        };
+
+        VkDynamicState dynamic_states[] = {
+            VK_DYNAMIC_STATE_VIEWPORT
+        };
+
+        VkPipelineDynamicStateCreateInfo dynamic_state_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            .dynamicStateCount = countof(dynamic_states),
+            .pDynamicStates = dynamic_states
+        };
+
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 0,
+            .pSetLayouts = NULL,
+            .pushConstantRangeCount = 0,
+            .pPushConstantRanges = NULL
+        };
+
+        VK_CHECK(vkCreatePipelineLayout(vk->device, &pipeline_layout_info, NULL, &vk->pipeline_layout));
+        vkDestroyShaderModule(vk->device, shader_frag, NULL);
+        vkDestroyShaderModule(vk->device, shader_vert, NULL);
 	}
+
+    /* render pass */
+    {
+        VkAttachmentDescription color_attachment = {
+            .format = vk->swapchain_format,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+        };
+    }
 }
 
 static void vk_destroy(struct VK *vk)
 {
-	vkDestroyShaderModule(vk->device, vk->shader_frag, NULL);
-	vkDestroyShaderModule(vk->device, vk->shader_vert, NULL);
+    vkDestroyPipelineLayout(vk->device, vk->pipeline_layout, NULL);
 
 	for(uint32_t i = 0; i < vk->swapchain_image_count; ++i) {
 		vkDestroyImageView(vk->device, vk->swapchain_image_views[i], NULL);
