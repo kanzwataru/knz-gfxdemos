@@ -47,14 +47,12 @@ struct VK {
     VkPipelineLayout pipeline_layout;
 
 	/* Queues and Commands */
-	VkQueue queue_present;
 	VkQueue queue_graphics;
 
 	VkCommandPool command_pool_graphics;
 	VkCommandBuffer command_buffer_graphics;
 
 	uint32_t queue_graphics_idx;
-	uint32_t queue_present_idx;
 };
 
 static struct VK s_vk;
@@ -177,23 +175,20 @@ static void vk_init(struct VK *vk)
 		vkGetPhysicalDeviceQueueFamilyProperties(vk->physical_device, &queue_families_count, queue_families);
 
 		bool found_graphics = false;
-		bool found_present = false;
 		for(uint32_t i = 0; i < queue_families_count; ++i) {
-			if(!found_graphics && queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+			/* :NOTE:
+			 * Unlike vulkan-tutorial, we find combined present/graphics queues because
+			 * drivers that don't support this do not seem to exist.
+			 */
+			VkBool32 present_support = false;
+			vkGetPhysicalDeviceSurfaceSupportKHR(vk->physical_device, i, vk->surface, &present_support);
+			if(!found_graphics && present_support && queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
 				found_graphics = true;
 				vk->queue_graphics_idx = i;
 			}
-
-			VkBool32 present_support = false;
-			vkGetPhysicalDeviceSurfaceSupportKHR(vk->physical_device, i, vk->surface, &present_support);
-			if(!found_present && present_support) {
-				found_present = true;
-				vk->queue_present_idx = i;
-			}
 		}
 
-		CHECK(found_graphics, "No graphics queue found");
-		CHECK(found_present, "No present queue found");
+		CHECK(found_graphics, "No combined graphics/present queue found");
 	}
 
 	/* logical device */
@@ -221,13 +216,14 @@ static void vk_init(struct VK *vk)
 		}
 
 		/* queue */
-		VkDeviceQueueCreateInfo queue_infos[2];
-		uint32_t queue_indices[2] = {
+		VkDeviceQueueCreateInfo queue_infos[1];
+		uint32_t queue_indices[1] = {
 			vk->queue_graphics_idx,
-			vk->queue_present_idx
 		};
 
-		uint32_t queue_count = vk->queue_graphics_idx == vk->queue_present_idx ? 1 : 2;
+		static_assert(countof(queue_infos) == countof(queue_indices), "");
+
+		uint32_t queue_count = countof(queue_indices);
 
 		float queue_priority = 1.0f;
 		for(uint32_t i = 0; i < queue_count; ++i) {
@@ -253,7 +249,6 @@ static void vk_init(struct VK *vk)
 
 		VK_CHECK(vkCreateDevice(vk->physical_device, &create_info, NULL, &vk->device));
 
-		vkGetDeviceQueue(vk->device, vk->queue_present_idx, 0, &vk->queue_present);
 		vkGetDeviceQueue(vk->device, vk->queue_graphics_idx, 0, &vk->queue_graphics);
 	}
 
@@ -317,22 +312,9 @@ static void vk_init(struct VK *vk)
 			.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
 			.presentMode = mode,
 			.clipped = VK_TRUE,
-			.oldSwapchain = VK_NULL_HANDLE
+			.oldSwapchain = VK_NULL_HANDLE,
+			.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE // NOTE: This would be VK_SHARING_MODE_CONCURRENT for separate present/graphics queue but we don't support that
 		};
-
-		if(vk->queue_graphics_idx != vk->queue_present_idx) {
-			uint32_t queue_family_indices[] = {
-				vk->queue_graphics_idx,
-				vk->queue_present_idx
-			};
-
-			create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
-			create_info.queueFamilyIndexCount = 2;
-			create_info.pQueueFamilyIndices = queue_family_indices;
-		}
-		else {
-			create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-		}
 
 		VK_CHECK(vkCreateSwapchainKHR(vk->device, &create_info, NULL, &vk->swapchain));
 
