@@ -41,6 +41,10 @@ struct VK {
     VkPipelineLayout pipeline_layout;
 
 	VkQueue queue_present;
+	VkQueue queue_graphics;
+
+	VkCommandPool command_pool_graphics;
+	VkCommandBuffer command_buffer_graphics;
 
 	uint32_t queue_graphics_idx;
 	uint32_t queue_present_idx;
@@ -243,6 +247,7 @@ static void vk_init(struct VK *vk)
 		VK_CHECK(vkCreateDevice(vk->physical_device, &create_info, NULL, &vk->device));
 
 		vkGetDeviceQueue(vk->device, vk->queue_present_idx, 0, &vk->queue_present);
+		vkGetDeviceQueue(vk->device, vk->queue_graphics_idx, 0, &vk->queue_graphics);
 	}
 
 	/* swap chain */
@@ -352,6 +357,26 @@ static void vk_init(struct VK *vk)
 
 			VK_CHECK(vkCreateImageView(vk->device, &create_info, NULL, &vk->swapchain_image_views[i]));
 		}
+	}
+
+	/* commands */
+	{
+		VkCommandPoolCreateInfo pool_info = {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+			.queueFamilyIndex = vk->queue_graphics_idx,
+			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT // allow for resetting individual command buffers, but do we need it?
+		};
+
+		VK_CHECK(vkCreateCommandPool(vk->device, &pool_info, NULL, &vk->command_pool_graphics));
+
+		VkCommandBufferAllocateInfo command_alloc_info = {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+			.commandPool = vk->command_pool_graphics,
+			.commandBufferCount = 1,
+			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY
+		};
+
+		VK_CHECK(vkAllocateCommandBuffers(vk->device, &command_alloc_info, &vk->command_buffer_graphics));
 	}
 
 	/* shaders and pipeline layout */
@@ -491,6 +516,8 @@ static void vk_init(struct VK *vk)
 static void vk_destroy(struct VK *vk)
 {
     vkDestroyPipelineLayout(vk->device, vk->pipeline_layout, NULL);
+
+    vkDestroyCommandPool(vk->device, vk->command_pool_graphics, NULL);
 
 	for(uint32_t i = 0; i < vk->swapchain_image_count; ++i) {
 		vkDestroyImageView(vk->device, vk->swapchain_image_views[i], NULL);
