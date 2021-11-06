@@ -34,6 +34,7 @@ struct VK {
 
     /* Pipeline and Shaders */
     VkPipelineLayout pipeline_layout;
+    VkPipeline pipeline;
 
 	/* Queues and Commands */
 	VkQueue queue_graphics;
@@ -380,39 +381,51 @@ static void vk_init(struct VK *vk)
 		VK_CHECK(vkAllocateCommandBuffers(vk->device, &command_alloc_info, &vk->command_buffer_graphics));
 	}
 
-	/* shaders and pipeline layout */
+	/* shaders and pipeline */
 	{
         VkShaderModule shader_vert = vk_create_shader_module_from_file(vk, "shaders/flat_vert.spv");
         VkShaderModule shader_frag = vk_create_shader_module_from_file(vk, "shaders/flat_frag.spv");
 
-		VkPipelineShaderStageCreateInfo vert_shader_stage_info = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-			.stage = VK_SHADER_STAGE_VERTEX_BIT,
-            .module = shader_vert,
-			.pName = "main"
-		};
+        VkPipelineShaderStageCreateInfo shader_stages[] = {
+            {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = VK_SHADER_STAGE_VERTEX_BIT,
+                .module = shader_vert,
+                .pName = "main"
+            },
+            {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+                .module = shader_frag,
+                .pName = "main"
+            }
+        };
 
-		VkPipelineShaderStageCreateInfo frag_shader_stage_info = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-			.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-            .module = shader_frag,
-			.pName = "main"
-		};
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 0,
+            .pSetLayouts = NULL,
+            .pushConstantRangeCount = 0,
+            .pPushConstantRanges = NULL
+        };
 
-		VkPipelineVertexInputStateCreateInfo vertex_input_info = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-			// Fill these in later
-			.vertexBindingDescriptionCount = 0,
-			.pVertexBindingDescriptions = NULL,
-			.vertexAttributeDescriptionCount = 0,
-			.pVertexAttributeDescriptions = NULL,
-		};
+        VK_CHECK(vkCreatePipelineLayout(vk->device, &pipeline_layout_info, NULL, &vk->pipeline_layout));
 
-		VkPipelineInputAssemblyStateCreateInfo input_assembly_info = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-			.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-			.primitiveRestartEnable = VK_FALSE
-		};
+        /* pipeline */
+        VkPipelineVertexInputStateCreateInfo vertex_input_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            // Fill these in later
+            .vertexBindingDescriptionCount = 0,
+            .pVertexBindingDescriptions = NULL,
+            .vertexAttributeDescriptionCount = 0,
+            .pVertexAttributeDescriptions = NULL,
+        };
+
+        VkPipelineInputAssemblyStateCreateInfo input_assembly_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            .primitiveRestartEnable = VK_FALSE
+        };
 
         VkViewport viewport = {
             .x = 0.0f,
@@ -454,17 +467,23 @@ static void vk_init(struct VK *vk)
             .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
             .sampleShadingEnable = VK_FALSE,
             .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+            .minSampleShading = 1.0f,
+            .pSampleMask = NULL,
+            .alphaToCoverageEnable = VK_FALSE,
+            .alphaToOneEnable = VK_FALSE
         };
 
         VkPipelineColorBlendAttachmentState color_blend_attachment = {
             .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
             .blendEnable = VK_FALSE,
+            /*
             .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
             .dstColorBlendFactor = VK_BLEND_FACTOR_ZERO,
             .colorBlendOp = VK_BLEND_OP_ADD,
             .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
             .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
             .alphaBlendOp = VK_BLEND_OP_ADD
+            */
         };
 
         VkPipelineColorBlendStateCreateInfo color_blending = {
@@ -473,31 +492,28 @@ static void vk_init(struct VK *vk)
             .logicOp = VK_LOGIC_OP_COPY,
             .attachmentCount = 1,
             .pAttachments = &color_blend_attachment,
-            .blendConstants = {0, 0, 0, 0}
         };
 
-        VkDynamicState dynamic_states[] = {
-            VK_DYNAMIC_STATE_VIEWPORT
+        VkGraphicsPipelineCreateInfo pipeline_info = {
+            .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            .stageCount = countof(shader_stages),
+            .pStages = shader_stages,
+            .pVertexInputState = &vertex_input_info,
+            .pInputAssemblyState = &input_assembly_info,
+            .pViewportState = &viewport_state_info,
+            .pRasterizationState = &rasterizer_info,
+            .pMultisampleState = &multisampling_info,
+            .pColorBlendState = &color_blending,
+            .layout = vk->pipeline_layout,
+            .subpass = 0,
+            .basePipelineHandle = VK_NULL_HANDLE
         };
 
-        VkPipelineDynamicStateCreateInfo dynamic_state_info = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-            .dynamicStateCount = countof(dynamic_states),
-            .pDynamicStates = dynamic_states
-        };
-
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-            .setLayoutCount = 0,
-            .pSetLayouts = NULL,
-            .pushConstantRangeCount = 0,
-            .pPushConstantRanges = NULL
-        };
-
-        VK_CHECK(vkCreatePipelineLayout(vk->device, &pipeline_layout_info, NULL, &vk->pipeline_layout));
+        // TODO BUG: This crashes (on AMD), need to fix before going further
+        //VK_CHECK(vkCreateGraphicsPipelines(vk->device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &vk->pipeline));
         vkDestroyShaderModule(vk->device, shader_frag, NULL);
         vkDestroyShaderModule(vk->device, shader_vert, NULL);
-	}
+    }
 
     /* render pass */
     {
@@ -573,6 +589,8 @@ static void vk_init(struct VK *vk)
 static void vk_destroy(struct VK *vk)
 {
     vkDeviceWaitIdle(vk->device);
+
+    vkDestroyPipeline(vk->device, vk->pipeline, NULL);
 
     vkDestroySemaphore(vk->device, vk->render_semaphore, NULL);
     vkDestroySemaphore(vk->device, vk->present_semaphore, NULL);
