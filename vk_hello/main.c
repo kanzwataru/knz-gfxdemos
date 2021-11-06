@@ -637,27 +637,32 @@ static void render(struct Render_State *r, struct VK *vk)
 
 	VK_CHECK(vkBeginCommandBuffer(cmdbuf, &cmdbuf_begin_info));
 
+	VkClearValue clear_value = {0};
+
+	VkRenderPassBeginInfo render_pass_info = {
+		.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+		.renderPass = vk->render_pass,
+		.renderArea = {
+			.offset = {},
+			.extent = vk->swapchain_extent
+		},
+		.framebuffer = vk->framebuffers[swapchain_index],
+		.clearValueCount = 1,
+		.pClearValues = &clear_value
+	};
+
 	/* app-specific */
 	{
 		const float flash = fabs(sinf(r->frame_number / 120.0f));
 
-		VkClearValue clear_value = {
+		clear_value = (VkClearValue) {
 			.color.float32 = {0.65f * flash, 0.25f * flash, 0.15f * flash, 1.0f}
 		};
 
-		VkRenderPassBeginInfo render_pass_info = {
-			.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-			.renderPass = vk->render_pass,
-			.renderArea = {
-				.offset = {},
-				.extent = vk->swapchain_extent
-			},
-			.framebuffer = vk->framebuffers[swapchain_index],
-			.clearValueCount = 1,
-			.pClearValues = &clear_value
-		};
-
 		vkCmdBeginRenderPass(cmdbuf, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+
+		vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->pipeline);
+		vkCmdDraw(cmdbuf, 3, 1, 0, 0);
 
 		vkCmdEndRenderPass(cmdbuf);
 	}
