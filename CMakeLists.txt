@@ -14,7 +14,7 @@ if(WIN32)
 		COMMAND ${CMAKE_COMMAND} -E copy_if_different
 		"${SDL2_DIR}/lib/x64/SDL2.dll" "${CMAKE_BINARY_DIR}/SDL2.dll")
 else()
-    target_link_libraries(vk_hello m)
+	target_link_libraries(vk_hello m)
 endif()
 
 # Based on https://www.reddit.com/r/vulkan/comments/kbaxlz/what_is_your_workflow_when_compiling_shader_files/
@@ -44,3 +44,6 @@ endfunction(add_shader)
 
 add_shader(vk_hello flat_frag frag)
 add_shader(vk_hello flat_vert vert)
+
+add_shader(vk_hello rgb_frag frag)
+add_shader(vk_hello rgb_vert vert)
