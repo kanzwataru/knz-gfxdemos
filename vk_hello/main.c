@@ -545,7 +545,7 @@ static void vk_init(struct VK *vk)
             .layers = 1
         };
 
-        for(int i = 0; i < vk->swapchain_image_count; ++i) {
+        for(uint32_t i = 0; i < vk->swapchain_image_count; ++i) {
             framebuffer_info.pAttachments = &vk->swapchain_image_views[i];
             VK_CHECK(vkCreateFramebuffer(vk->device, &framebuffer_info, NULL, &vk->framebuffers[i]));
         }
@@ -572,6 +572,8 @@ static void vk_init(struct VK *vk)
 
 static void vk_destroy(struct VK *vk)
 {
+    vkDeviceWaitIdle(vk->device);
+
     vkDestroySemaphore(vk->device, vk->render_semaphore, NULL);
     vkDestroySemaphore(vk->device, vk->present_semaphore, NULL);
     vkDestroyFence(vk->device, vk->render_fence, NULL);
@@ -583,6 +585,7 @@ static void vk_destroy(struct VK *vk)
     vkDestroyCommandPool(vk->device, vk->command_pool_graphics, NULL);
 
 	for(uint32_t i = 0; i < vk->swapchain_image_count; ++i) {
+        vkDestroyFramebuffer(vk->device, vk->framebuffers[i], NULL);
 		vkDestroyImageView(vk->device, vk->swapchain_image_views[i], NULL);
 	}
 
@@ -601,7 +604,7 @@ static void render(struct Render_State *r, struct VK *vk)
 	/* SYNC: Here we pass in a semaphore that will be signalled once we have an
 	 * image available to draw into */
 	uint32_t swapchain_index;
-	VK_CHECK(vkAcquireNextImageKHR(vk->device, vk->swapchain, TIMEOUT, vk->present_semaphore, s_vk.render_fence, &swapchain_index));
+    VK_CHECK(vkAcquireNextImageKHR(vk->device, vk->swapchain, TIMEOUT, vk->present_semaphore, NULL, &swapchain_index));
 
 	/* commands */
 	VK_CHECK(vkResetCommandBuffer(vk->command_buffer_graphics, 0));
