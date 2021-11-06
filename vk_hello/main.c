@@ -381,6 +381,41 @@ static void vk_init(struct VK *vk)
 		VK_CHECK(vkAllocateCommandBuffers(vk->device, &command_alloc_info, &vk->command_buffer_graphics));
 	}
 
+    /* render pass */
+    {
+        VkAttachmentDescription color_attachment = {
+            .format = vk->swapchain_format,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+        };
+
+        VkAttachmentReference color_attachment_ref = {
+            .attachment = 0, // References the pAttachments array in the parent renderpass
+            .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+        };
+
+        VkSubpassDescription subpass = {
+            .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &color_attachment_ref
+        };
+
+        VkRenderPassCreateInfo render_pass_info = {
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+            .attachmentCount = 1,
+            .pAttachments = &color_attachment, // This is where VkAttachmentReference::attachment indexes into
+            .subpassCount = 1,
+            .pSubpasses = &subpass
+        };
+
+        VK_CHECK(vkCreateRenderPass(vk->device, &render_pass_info, NULL, &vk->render_pass));
+    }
+
 	/* shaders and pipeline */
 	{
         VkShaderModule shader_vert = vk_create_shader_module_from_file(vk, "shaders/flat_vert.spv");
@@ -506,48 +541,13 @@ static void vk_init(struct VK *vk)
             .pColorBlendState = &color_blending,
             .layout = vk->pipeline_layout,
             .subpass = 0,
-            .basePipelineHandle = VK_NULL_HANDLE
+            .basePipelineHandle = VK_NULL_HANDLE,
+            .renderPass = vk->render_pass
         };
 
-        // TODO BUG: This crashes (on AMD), need to fix before going further
-        //VK_CHECK(vkCreateGraphicsPipelines(vk->device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &vk->pipeline));
+        VK_CHECK(vkCreateGraphicsPipelines(vk->device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &vk->pipeline));
         vkDestroyShaderModule(vk->device, shader_frag, NULL);
         vkDestroyShaderModule(vk->device, shader_vert, NULL);
-    }
-
-    /* render pass */
-    {
-        VkAttachmentDescription color_attachment = {
-            .format = vk->swapchain_format,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-        };
-
-        VkAttachmentReference color_attachment_ref = {
-            .attachment = 0, // References the pAttachments array in the parent renderpass
-            .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-        };
-
-        VkSubpassDescription subpass = {
-            .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
-            .colorAttachmentCount = 1,
-            .pColorAttachments = &color_attachment_ref
-        };
-
-        VkRenderPassCreateInfo render_pass_info = {
-            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-            .attachmentCount = 1,
-            .pAttachments = &color_attachment, // This is where VkAttachmentReference::attachment indexes into
-            .subpassCount = 1,
-            .pSubpasses = &subpass
-        };
-
-        VK_CHECK(vkCreateRenderPass(vk->device, &render_pass_info, NULL, &vk->render_pass));
     }
 
     /* framebuffers */
