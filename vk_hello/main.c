@@ -66,6 +66,9 @@ struct VK {
 	VkSemaphore present_semaphore;
 	VkSemaphore render_semaphore;
 	VkFence render_fence;
+
+	/* Memory */
+	int mem_host_coherent_idx;
 	
 	/* Resources */
 	struct VK_Deletion_Queue deletion_queue;
@@ -665,12 +668,13 @@ static void vk_init(struct VK *vk)
         VkPhysicalDeviceMemoryProperties mem_properties;
         vkGetPhysicalDeviceMemoryProperties(vk->physical_device, &mem_properties);
     
+        /* print info */
         printf("Memory heaps:\n");
         for(int i = 0; i < mem_properties.memoryHeapCount; ++i) {
             printf("-> [%d] %zuMB\n", i, mem_properties.memoryHeaps[i].size / (1024 * 1024));
         }
         printf("\n");
-        
+
         printf("Memory types:\n");
         for(int i = 0; i < mem_properties.memoryTypeCount; ++i) {
             printf("-> [%d] Index: %d Flags:", i, mem_properties.memoryTypes[i].heapIndex);
@@ -688,6 +692,19 @@ static void vk_init(struct VK *vk)
             printf("\n");
         }
         printf("\n");
+        
+        /* Choose a buffer that is host visible */
+        bool found = false;
+        for(int i = 0; i < mem_properties.memoryTypeCount; ++i) {
+            if(mem_properties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                vk->mem_host_coherent_idx = i;
+                found = true;
+                break;
+            }
+        }
+        
+        CHECK(found, "Couldn't find host visible and coherent memory heap");
+        printf("Chose type %d (heap %d)\n", vk->mem_host_coherent_idx, mem_properties.memoryTypes[vk->mem_host_coherent_idx].heapIndex);
     }
 
     /* app-specific init
@@ -717,14 +734,23 @@ static void vk_init(struct VK *vk)
         
         VkMemoryRequirements mem_requirements;
         vkGetBufferMemoryRequirements(vk->device, vk->tri_vert_buffer, &mem_requirements);
-        
-        
-        
+               
         VkMemoryAllocateInfo alloc_info = {
             .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
             .allocationSize = mem_requirements.size,
-            //.memoryTypeIndex
+            .memoryTypeIndex = vk->mem_host_coherent_idx,
         };
+        
+        VkDeviceMemory mem;
+        VK_CHECK(vkAllocateMemory(vk->device, &alloc_info, NULL, &mem));
+        vk_push_deletable(vk, vkFreeMemory, mem);
+       
+        vkBindBufferMemory(vk->device, vk->tri_vert_buffer, mem, 0);
+        
+        void *mapped_mem;
+        vkMapMemory(vk->device, mem, 0, mem_requirements.size, 0, &mapped_mem);
+        memcpy(mapped_mem, tri_verts, sizeof(tri_verts));
+        vkUnmapMemory(vk->device, mem);
     }
 }
 
