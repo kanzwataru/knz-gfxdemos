@@ -4,7 +4,7 @@ project(vk_hello)
 find_package(Vulkan REQUIRED)
 find_package(SDL2 REQUIRED)
 
-include_directories(${SDL2_INCLUDE_DIRS})
+include_directories(${SDL2_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/extern_lib/cglm/include)
 
 add_executable(vk_hello vk_hello/main.c)
 target_link_libraries(vk_hello Vulkan::Vulkan ${SDL2_LIBRARIES})

@@ -1,3 +1,5 @@
+#include <cglm/cglm.h>
+#include <cglm/struct.h>
 #include <vulkan/vulkan.h>
 #include <SDL.h>
 #include <SDL_vulkan.h>
@@ -13,7 +15,6 @@
 #define WIDTH 1280
 #define HEIGHT 720
 #define TIMEOUT 1000000000
-
 
 /* Deletion Queue Notes:
  * 
@@ -86,6 +87,11 @@ struct VK {
 struct Render_State {
 	uint64_t frame_number;
 	bool colorful_tri;
+};
+
+struct Push_Constant_Data {
+	vec4s data;
+	mat4s matrix;
 };
 
 static struct VK s_vk;
@@ -635,14 +641,22 @@ static void vk_init(struct VK *vk)
 	/* pipeline layout */
 	{
 		// TODO: Make a function for creating this too, since it's app-specific
+		VkPushConstantRange ranges[] = {
+			{
+				.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+				.offset = 0,
+				.size = sizeof(struct Push_Constant_Data)
+			}
+		};
+
 		VkPipelineLayoutCreateInfo pipeline_layout_info = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .setLayoutCount = 0,
             .pSetLayouts = NULL,
-            .pushConstantRangeCount = 0,
-            .pPushConstantRanges = NULL
+            .pushConstantRangeCount = countof(ranges),
+            .pPushConstantRanges = ranges
         };
-        
+
         VK_CHECK(vkCreatePipelineLayout(vk->device, &pipeline_layout_info, NULL, &vk->empty_pipeline_layout));
         vk_push_deletable(vk, vkDestroyPipelineLayout, vk->empty_pipeline_layout);
     }
@@ -837,28 +851,31 @@ static void render(struct Render_State *r, struct VK *vk)
 	/* app-specific */
 	{
 		const float flash = fabs(sinf(r->frame_number / 120.0f));
-
+		struct Push_Constant_Data constants = {
+			.data = {0, 0, 0, 0},
+			.matrix = glms_mat4_identity()
+		};
+		
+		constants.matrix.col[3].y = sinf(r->frame_number / 40.0f) * 0.25f;
+		
 		clear_value = (VkClearValue) {
 			.color.float32 = {0.65f * flash, 0.25f * flash, 0.15f * flash, 1.0f}
 		};
 
 		vkCmdBeginRenderPass(cmdbuf, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
 
-		{
-			VkBuffer buffers[] = {
-				vk->tri_vert_buffer
-			};
-			VkDeviceSize offsets[] = {
-				0
-			};
-			vkCmdBindVertexBuffers(cmdbuf, 0, countof(buffers), buffers, offsets);
-		}
+		VkBuffer buffers[] = { vk->tri_vert_buffer };
+		VkDeviceSize offsets[] = { 0 };
+		vkCmdBindVertexBuffers(cmdbuf, 0, countof(buffers), buffers, offsets);
+
 		if(r->colorful_tri) {
 			vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->rgb_pipeline);
 		}
 		else {
 			vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->flat_pipeline);
 		}
+
+		vkCmdPushConstants(cmdbuf, vk->empty_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
 		vkCmdDraw(cmdbuf, 3, 1, 0, 0);
 
 		vkCmdEndRenderPass(cmdbuf);
