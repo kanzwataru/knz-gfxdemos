@@ -54,13 +54,6 @@ struct VK {
 	VkFramebuffer framebuffers[32];
 	uint32_t swapchain_image_count;
 
-    /* Pipeline and Shaders */
-    // -- TODO: Split out these app-specific things
-    VkPipelineLayout empty_pipeline_layout;
-    VkPipeline flat_pipeline;
-    VkPipeline rgb_pipeline;
-    // --
-
 	/* Queues and Commands */
 	VkQueue queue_graphics;
 
@@ -76,6 +69,15 @@ struct VK {
 	
 	/* Resources */
 	struct VK_Deletion_Queue deletion_queue;
+
+	// -- TODO: Split out these app-specific things
+    /* Pipeline and Shaders */
+    VkPipelineLayout empty_pipeline_layout;
+    VkPipeline flat_pipeline;
+    VkPipeline rgb_pipeline;
+    /* Vertex buffers and mesh data */
+    VkBuffer tri_vert_buffer;    
+    // --
 };
 
 struct Render_State {
@@ -656,6 +658,73 @@ static void vk_init(struct VK *vk)
         VK_CHECK(vkCreateSemaphore(vk->device, &semaphore_info, NULL, &vk->render_semaphore));
         vk_push_deletable(vk, vkDestroySemaphore, vk->present_semaphore);
         vk_push_deletable(vk, vkDestroySemaphore, vk->render_semaphore);
+    }
+    
+    /* memory query */
+    {
+        VkPhysicalDeviceMemoryProperties mem_properties;
+        vkGetPhysicalDeviceMemoryProperties(vk->physical_device, &mem_properties);
+    
+        printf("Memory heaps:\n");
+        for(int i = 0; i < mem_properties.memoryHeapCount; ++i) {
+            printf("-> [%d] %zuMB\n", i, mem_properties.memoryHeaps[i].size / (1024 * 1024));
+        }
+        printf("\n");
+        
+        printf("Memory types:\n");
+        for(int i = 0; i < mem_properties.memoryTypeCount; ++i) {
+            printf("-> [%d] Index: %d Flags:", i, mem_properties.memoryTypes[i].heapIndex);
+            int flags = mem_properties.memoryTypes[i].propertyFlags;
+            if(flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+                printf("DEVICE_LOCAL ");
+            if(flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+                printf("HOST_VISIBLE ");
+            if(flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+                printf("HOST_COHERENT ");
+            if(flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
+                printf("HOST_CACHED ");
+            if(flags & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT)
+                printf("LAZILY_ALLOCATED ");
+            printf("\n");
+        }
+        printf("\n");
+    }
+
+    /* app-specific init
+     * TODO: move this out */
+    {
+        // Create buffer
+        // Mark as vertex buffer
+        // Allocate memory for buffer
+        // Map, copy, unmap
+        
+        const float tri_verts[] = {
+             0.0f, -0.5f, 0.0f,
+             0.5f,  0.5f, 0.0f
+            -0.5f,  0.5f, 0.0f
+        };
+
+        VkBufferCreateInfo buffer_info = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .flags = 0,
+            .size = sizeof(tri_verts),
+            .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+        };
+        
+        VK_CHECK(vkCreateBuffer(vk->device, &buffer_info, NULL, &vk->tri_vert_buffer));
+        vk_push_deletable(vk, vkDestroyBuffer, vk->tri_vert_buffer);
+        
+        VkMemoryRequirements mem_requirements;
+        vkGetBufferMemoryRequirements(vk->device, vk->tri_vert_buffer, &mem_requirements);
+        
+        
+        
+        VkMemoryAllocateInfo alloc_info = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = mem_requirements.size,
+            //.memoryTypeIndex
+        };
     }
 }
 
