@@ -167,13 +167,36 @@ static VkPipeline vk_create_pipeline(struct VK *vk,
                                      VkPipelineShaderStageCreateInfo *shader_stages,
                                      int shader_stage_count)
 {
+    VkVertexInputBindingDescription binding_descs[] = {
+        {
+            .binding = 0,
+            .stride = sizeof(float) * 6,
+            .inputRate = VK_VERTEX_INPUT_RATE_VERTEX
+        }
+    };
+    
+    VkVertexInputAttributeDescription attr_descs[] = {
+        {
+            .location = 0,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset = 0
+        },
+        {
+            .location = 1,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset = sizeof(float) * 3
+        }
+    };
+
     VkPipelineVertexInputStateCreateInfo vertex_input_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         // Fill these in later
-        .vertexBindingDescriptionCount = 0,
-        .pVertexBindingDescriptions = NULL,
-        .vertexAttributeDescriptionCount = 0,
-        .pVertexAttributeDescriptions = NULL,
+        .vertexBindingDescriptionCount = countof(binding_descs),
+        .pVertexBindingDescriptions = binding_descs,
+        .vertexAttributeDescriptionCount = countof(attr_descs),
+        .pVertexAttributeDescriptions = attr_descs
     };
 
     VkPipelineInputAssemblyStateCreateInfo input_assembly_info = {
@@ -716,9 +739,9 @@ static void vk_init(struct VK *vk)
         // Map, copy, unmap
         
         const float tri_verts[] = {
-             0.0f, -0.5f, 0.0f,
-             0.5f,  0.5f, 0.0f
-            -0.5f,  0.5f, 0.0f
+             0.0f, -0.5f, 0.0f,     1.0f, 0.0f, 0.0f,
+             0.5f,  0.5f, 0.0f,     0.0f, 1.0f, 0.0f,
+            -0.5f,  0.5f, 0.0f,     0.0f, 0.0f, 1.0f
         };
 
         VkBufferCreateInfo buffer_info = {
@@ -821,6 +844,15 @@ static void render(struct Render_State *r, struct VK *vk)
 
 		vkCmdBeginRenderPass(cmdbuf, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
 
+		{
+			VkBuffer buffers[] = {
+				vk->tri_vert_buffer
+			};
+			VkDeviceSize offsets[] = {
+				0
+			};
+			vkCmdBindVertexBuffers(cmdbuf, 0, countof(buffers), buffers, offsets);
+		}
 		if(r->colorful_tri) {
 			vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->rgb_pipeline);
 		}
