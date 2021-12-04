@@ -1,5 +1,10 @@
+#define CGLM_FORCE_LEFT_HANDED
+#define CGLM_FORCE_DEPTH_ZERO_TO_ONE
+
 #include <cglm/cglm.h>
 #include <cglm/struct.h>
+#include <cglm/affine-mat.h>
+#include <cglm/affine.h>
 #include <vulkan/vulkan.h>
 #include <SDL.h>
 #include <SDL_vulkan.h>
@@ -91,7 +96,8 @@ struct Render_State {
 
 struct Push_Constant_Data {
 	vec4s data;
-	mat4s matrix;
+	mat4s model_matrix;
+	mat4s view_proj_matrix;
 };
 
 static struct VK s_vk;
@@ -851,13 +857,21 @@ static void render(struct Render_State *r, struct VK *vk)
 	/* app-specific */
 	{
 		const float flash = fabs(sinf(r->frame_number / 120.0f));
+		
+		mat4s view = glms_mat4_identity();
+		mat4s proj = glms_ortho(0.0f, WIDTH, 0.0f, HEIGHT, 0.0f, 1.0f);
+
 		struct Push_Constant_Data constants = {
 			.data = {0, 0, 0, 0},
-			.matrix = glms_mat4_identity()
+			.model_matrix = glms_mat4_identity(),
+			.view_proj_matrix = glms_mat4_mul(view, proj)
 		};
-		
-		constants.matrix.col[3].y = sinf(r->frame_number / 40.0f) * 0.25f;
-		
+
+		const float y = sinf(r->frame_number / 40.0f) * 0.25f;
+		constants.model_matrix = glms_translate_make((vec3s){1.5f, 1.0f + y, 0.0f});
+		constants.model_matrix = glms_mat4_scale(constants.model_matrix, 400.0f);
+		constants.model_matrix.raw[3][3] = 1.0f;
+
 		clear_value = (VkClearValue) {
 			.color.float32 = {0.65f * flash, 0.25f * flash, 0.15f * flash, 1.0f}
 		};
