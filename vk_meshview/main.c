@@ -874,7 +874,7 @@ static void render(struct Render_State *r, struct VK *vk)
 		constants.model_matrix = glms_rotate(constants.model_matrix, glm_rad(r->frame_number), (vec3s){0.0f, 1.0f, 0.0f});
 
 		clear_value = (VkClearValue) {
-			.color.float32 = {0.65f * flash, 0.25f * flash, 0.15f * flash, 1.0f}
+			.color.float32 = {0.26f * flash, 0.16f * flash, 0.45f * flash, 1.0f}
 		};
 
 		vkCmdBeginRenderPass(cmdbuf, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
@@ -938,7 +938,7 @@ int main(int argc, char **argv)
 {
 	SDL_Init(SDL_INIT_VIDEO);
 
-	s_window = SDL_CreateWindow("vk_hello",
+	s_window = SDL_CreateWindow("vk_meshview",
 							    SDL_WINDOWPOS_UNDEFINED,
 							    SDL_WINDOWPOS_UNDEFINED,
 							    WIDTH, HEIGHT, SDL_WINDOW_VULKAN);
