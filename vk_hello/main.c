@@ -245,7 +245,8 @@ static VkPipeline vk_create_pipeline(struct VK *vk,
         .rasterizerDiscardEnable = VK_FALSE,
         .polygonMode = VK_POLYGON_MODE_FILL,
         .lineWidth = 1.0f, // NOTE: Anything thicker than 1 needs a capability enabled
-        .cullMode = VK_CULL_MODE_BACK_BIT,
+        //.cullMode = VK_CULL_MODE_BACK_BIT,
+        .cullMode = VK_CULL_MODE_NONE,
         .frontFace = VK_FRONT_FACE_CLOCKWISE,
         .depthBiasEnable = VK_FALSE,
         .depthBiasConstantFactor = 0.0f,
@@ -859,18 +860,18 @@ static void render(struct Render_State *r, struct VK *vk)
 		const float flash = fabs(sinf(r->frame_number / 120.0f));
 		
 		mat4s view = glms_mat4_identity();
-		mat4s proj = glms_ortho(0.0f, WIDTH, 0.0f, HEIGHT, 0.0f, 1.0f);
+		mat4s proj = glms_perspective(glm_rad(70.0f), (float)WIDTH / (float)HEIGHT, 0.1f, 1000.0f);
+		proj.raw[1][1] *= -1;
 
 		struct Push_Constant_Data constants = {
 			.data = {0, 0, 0, 0},
 			.model_matrix = glms_mat4_identity(),
-			.view_proj_matrix = glms_mat4_mul(view, proj)
+			.view_proj_matrix = glms_mat4_mul(proj, view)
 		};
 
 		const float y = sinf(r->frame_number / 40.0f) * 0.25f;
-		constants.model_matrix = glms_translate_make((vec3s){1.5f, 1.0f + y, 0.0f});
-		constants.model_matrix = glms_mat4_scale(constants.model_matrix, 400.0f);
-		constants.model_matrix.raw[3][3] = 1.0f;
+		constants.model_matrix = glms_translate_make((vec3s){0.0f, y - 0.15f, 1.5f});
+		constants.model_matrix = glms_rotate(constants.model_matrix, glm_rad(r->frame_number), (vec3s){0.0f, 1.0f, 0.0f});
 
 		clear_value = (VkClearValue) {
 			.color.float32 = {0.65f * flash, 0.25f * flash, 0.15f * flash, 1.0f}
