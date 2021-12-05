@@ -223,6 +223,12 @@ static VkPipeline vk_create_pipeline(struct VK *vk,
             .binding = 0,
             .format = VK_FORMAT_R32G32B32_SFLOAT,
             .offset = sizeof(float) * 3
+        },
+        {
+            .location = 2,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+            .offset = sizeof(float) * 6
         }
     };
 
