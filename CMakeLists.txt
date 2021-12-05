@@ -21,7 +21,7 @@ function(f_add_target TARGET SRC)
 	set_target_properties(${TARGET} PROPERTIES
 		RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/${TARGET}"
 	)
-endfunction(add_sample)
+endfunction()
 
 # Based on https://www.reddit.com/r/vulkan/comments/kbaxlz/what_is_your_workflow_when_compiling_shader_files/
 function(f_add_shader TARGET SHADER STAGE)
@@ -46,7 +46,16 @@ function(f_add_shader TARGET SHADER STAGE)
     # Make sure our build depends on this output.
     set_source_files_properties(${current-output-path} PROPERTIES GENERATED TRUE)
     target_sources(${TARGET} PRIVATE ${current-output-path} ${current-shader-path})
-endfunction(add_shader)
+endfunction()
+
+function(f_add_data TARGET FILE)
+    add_custom_command(
+        TARGET ${TARGET}
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+        ARGS -E copy ${CMAKE_CURRENT_SOURCE_DIR}/${TARGET}/${FILE} ${CMAKE_BINARY_DIR}/${TARGET}/${FILE}
+    )
+endfunction()
 
 # vk_hello
 f_add_target(vk_hello vk_hello/main.c)
@@ -65,3 +74,5 @@ f_add_shader(vk_meshview flat_vert vert)
 
 f_add_shader(vk_meshview rgb_frag frag)
 f_add_shader(vk_meshview rgb_vert vert)
+
+f_add_data(vk_meshview data/cube.bin)

@@ -821,28 +821,59 @@ static void vk_init(struct VK *vk)
      * TODO: move this out */
     {
         // Triangle data
-        const float tri_verts[] = {
+        const size_t vert_buffer_stride = 8;
+        const size_t vert_buffer_stride_bytes = vert_buffer_stride * sizeof(float);
+
+#if 0
+        const float vert_buffer_data[] = {
              0.0f, -0.5f, 0.0f,     1.0f, 0.0f, 0.0f,    0.0f, 0.0f,
              0.5f,  0.5f, 0.0f,     0.0f, 1.0f, 0.0f,    0.0f, 0.0f,
             -0.5f,  0.5f, 0.0f,     0.0f, 0.0f, 1.0f,    0.0f, 0.0f
         };
 
-        const uint16_t tri_indices[] = {
+        const uint16_t index_buffer_data[] = {
             0, 1, 2
         };
 
         struct Mesh mesh = {
-            .index_count = countof(tri_indices),
-            .vert_count = countof(tri_verts)
+            .vert_count = countof(vert_buffer_data),
+            .index_count = countof(index_buffer_data)
         };
+
+        const int vert_buffer_size = sizeof(vert_buffer_data);
+        const int index_buffer_size = sizeof(index_buffer_data);
+#else
+        uint32_t file_size;
+        char *mesh_data = file_load_binary("data/cube.bin", &file_size);
+
+        char *p = mesh_data;
+        uint32_t vert_count = *(uint32_t *)p;
+        p += sizeof(vert_count);
+
+        uint32_t index_count = *(uint32_t *)p;
+        p += sizeof(index_count);
+
+        const size_t vert_buffer_size = vert_count * vert_buffer_stride_bytes;
+        const size_t index_buffer_size = index_count * sizeof(uint16_t);
+
+        const float *vert_buffer_data = (float *)p;
+        p += vert_buffer_size;
+
+        const uint16_t *index_buffer_data = (uint16_t *)p;
+
+        struct Mesh mesh = {
+            .vert_count = vert_count,
+            .index_count = index_count
+        };
+#endif
 
         // Vertex buffer
         {
-            struct VK_Buffer buf = vk_create_and_alloc_buffer(vk, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, sizeof(tri_verts));
+            struct VK_Buffer buf = vk_create_and_alloc_buffer(vk, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vert_buffer_size);
             
             void *mapped_mem;
             vkMapMemory(vk->device, vk->mem, buf.offset, buf.size, 0, &mapped_mem);
-            memcpy(mapped_mem, tri_verts, sizeof(tri_verts));
+            memcpy(mapped_mem, vert_buffer_data, vert_buffer_size);
             vkUnmapMemory(vk->device, vk->mem);
 
             mesh.vert_buf = buf;
@@ -850,11 +881,11 @@ static void vk_init(struct VK *vk)
 
         // Index buffer
         {
-            struct VK_Buffer buf = vk_create_and_alloc_buffer(vk, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, sizeof(tri_indices));
+            struct VK_Buffer buf = vk_create_and_alloc_buffer(vk, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, index_buffer_size);
 
             void *mapped_mem;
             vkMapMemory(vk->device, vk->mem, buf.offset, buf.size, 0, &mapped_mem);
-            memcpy(mapped_mem, tri_indices, sizeof(tri_indices));
+            memcpy(mapped_mem, index_buffer_data, index_buffer_size);
             vkUnmapMemory(vk->device, vk->mem);
 
             mesh.index_buf = buf;
@@ -935,7 +966,7 @@ static void render(struct Render_State *r, struct VK *vk)
 		};
 
 		const float y = sinf(r->frame_number / 40.0f) * 0.25f;
-		constants.model_matrix = glms_translate_make((vec3s){0.0f, y - 0.15f, 1.5f});
+        constants.model_matrix = glms_translate_make((vec3s){0.0f, y - 0.15f, 3.5f});
 		constants.model_matrix = glms_rotate(constants.model_matrix, glm_rad(r->frame_number), (vec3s){0.0f, 1.0f, 0.0f});
 
 		clear_value = (VkClearValue) {
