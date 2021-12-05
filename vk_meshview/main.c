@@ -632,7 +632,8 @@ static void vk_init(struct VK *vk)
 
 		int width, height;
 		SDL_Vulkan_GetDrawableSize(s_window, &width, &height);
-		VkExtent2D extent = {width, height};
+        VkExtent2D extent = {width, height};
+        vk->swapchain_extent = extent;
 
 		/* find */
 		VkSurfaceFormatKHR format;
@@ -746,7 +747,6 @@ static void vk_init(struct VK *vk)
 		VK_CHECK(vkGetSwapchainImagesKHR(vk->device, vk->swapchain, &vk->swapchain_image_count, vk->swapchain_images));
 
 		vk->swapchain_format = format.format;
-		vk->swapchain_extent = extent;
 	}
 
 	/* swapchain image views */
@@ -816,7 +816,7 @@ static void vk_init(struct VK *vk)
                 .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
                 .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
                 .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .finalLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
+                .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
             }
         };
         
