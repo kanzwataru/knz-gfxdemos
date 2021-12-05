@@ -99,7 +99,7 @@ struct VK {
     /* Pipeline and Shaders */
     VkPipelineLayout empty_pipeline_layout;
     VkPipeline flat_pipeline;
-    VkPipeline rgb_pipeline;
+    VkPipeline lit_pipeline;
     /* Vertex buffers and mesh data */
     struct Mesh tri_mesh;
     // --
@@ -911,7 +911,7 @@ static void vk_destroy(struct VK *vk)
 static void scene_init(struct Render_State *r, struct VK *vk)
 {
 	vk->flat_pipeline = vk_create_pipeline_and_shaders(vk, "shaders/flat_vert.spv", "shaders/flat_frag.spv", vk->empty_pipeline_layout);
-	vk->rgb_pipeline = vk_create_pipeline_and_shaders(vk, "shaders/rgb_vert.spv", "shaders/rgb_frag.spv", vk->empty_pipeline_layout);
+	vk->lit_pipeline = vk_create_pipeline_and_shaders(vk, "shaders/lit_vert.spv", "shaders/lit_frag.spv", vk->empty_pipeline_layout);
 }
 
 static void render(struct Render_State *r, struct VK *vk)
@@ -981,7 +981,7 @@ static void render(struct Render_State *r, struct VK *vk)
         vkCmdBindIndexBuffer(cmdbuf, vk->tri_mesh.index_buf.handle, 0, VK_INDEX_TYPE_UINT16);
 
 		if(r->colorful_tri) {
-			vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->rgb_pipeline);
+			vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->lit_pipeline);
 		}
 		else {
 			vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->flat_pipeline);

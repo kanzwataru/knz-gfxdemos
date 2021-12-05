@@ -72,7 +72,7 @@ f_add_target(vk_meshview vk_meshview/main.c)
 f_add_shader(vk_meshview flat_frag frag)
 f_add_shader(vk_meshview flat_vert vert)
 
-f_add_shader(vk_meshview rgb_frag frag)
-f_add_shader(vk_meshview rgb_vert vert)
+f_add_shader(vk_meshview lit_frag frag)
+f_add_shader(vk_meshview lit_vert vert)
 
 f_add_data(vk_meshview data/cube.bin)
