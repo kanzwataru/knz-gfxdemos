@@ -20,6 +20,7 @@
 #define WIDTH 1280
 #define HEIGHT 720
 #define TIMEOUT 1000000000
+#define VRAM_POOL_SIZE (64 * 1024 * 1024)
 
 /* Deletion Queue Notes:
  * 
@@ -40,6 +41,12 @@ struct VK_Deletion_Queue {
     // TODO: This should chain to another block or use a dynamic allocation
     struct VK_Deletion_Entry entries[4096];
     int entries_top;
+};
+
+struct VK_Buffer {
+    VkBuffer handle;
+    size_t offset;
+    size_t size;
 };
 
 struct VK {
@@ -75,6 +82,8 @@ struct VK {
 
 	/* Memory */
 	int mem_host_coherent_idx;
+    VkDeviceMemory mem;
+    size_t mem_top;
 	
 	/* Resources */
 	struct VK_Deletion_Queue deletion_queue;
@@ -85,8 +94,8 @@ struct VK {
     VkPipeline flat_pipeline;
     VkPipeline rgb_pipeline;
     /* Vertex buffers and mesh data */
-    VkBuffer tri_vert_buffer;
-    VkBuffer tri_index_buffer;
+    struct VK_Buffer tri_vert_buffer;
+    struct VK_Buffer tri_index_buffer;
     // --
 };
 
@@ -345,6 +354,37 @@ static VkPipeline vk_create_pipeline_and_shaders(struct VK *vk,
     vkDestroyShaderModule(vk->device, shader_vert, NULL);
     
     return pipeline;
+}
+
+static struct VK_Buffer vk_create_and_alloc_buffer(struct VK *vk, VkBufferUsageFlagBits usage, size_t size)
+{
+    VkBufferCreateInfo buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .flags = 0,
+        .size = size,
+        .usage = usage,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+    };
+
+    VkBuffer buffer;
+
+    VK_CHECK(vkCreateBuffer(vk->device, &buffer_info, NULL, &buffer));
+    vk_push_deletable(vk, vkDestroyBuffer, buffer);
+
+    VkMemoryRequirements mem_requirements;
+    vkGetBufferMemoryRequirements(vk->device, buffer, &mem_requirements);
+
+    vk->mem_top = align_address(vk->mem_top, mem_requirements.alignment);
+    const size_t buffer_addr = vk->mem_top;
+
+    vkBindBufferMemory(vk->device, buffer, vk->mem, vk->mem_top);
+    vk->mem_top += mem_requirements.size;
+
+    return (struct VK_Buffer) {
+        .handle = buffer,
+        .offset = buffer_addr,
+        .size = mem_requirements.size
+    };
 }
 
 static void vk_init(struct VK *vk)
@@ -762,15 +802,14 @@ static void vk_init(struct VK *vk)
         // Allocate scratch memory        
         VkMemoryAllocateInfo alloc_info = {
             .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .allocationSize = 64 * 1024 * 1024,
+            .allocationSize = VRAM_POOL_SIZE,
             .memoryTypeIndex = vk->mem_host_coherent_idx,
         };
 
-        VkDeviceMemory mem;
-        VK_CHECK(vkAllocateMemory(vk->device, &alloc_info, NULL, &mem));
-        vk_push_deletable(vk, vkFreeMemory, mem);
+        VK_CHECK(vkAllocateMemory(vk->device, &alloc_info, NULL, &vk->mem));
+        vk_push_deletable(vk, vkFreeMemory, vk->mem);
 
-        size_t mem_top = 0;
+        vk->mem_top = 0;
 
         // Triangle data
         const float tri_verts[] = {
@@ -785,58 +824,26 @@ static void vk_init(struct VK *vk)
 
         // Vertex buffer
         {
-            VkBufferCreateInfo buffer_info = {
-                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                .flags = 0,
-                .size = sizeof(tri_verts),
-                .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                .sharingMode = VK_SHARING_MODE_EXCLUSIVE
-            };
-            
-            VK_CHECK(vkCreateBuffer(vk->device, &buffer_info, NULL, &vk->tri_vert_buffer));
-            vk_push_deletable(vk, vkDestroyBuffer, vk->tri_vert_buffer);
-            
-            VkMemoryRequirements mem_requirements;
-            vkGetBufferMemoryRequirements(vk->device, vk->tri_vert_buffer, &mem_requirements);
-            
-            mem_top = align_address(mem_top, mem_requirements.alignment);
-            const size_t buffer_addr = mem_top;
-
-            vkBindBufferMemory(vk->device, vk->tri_vert_buffer, mem, mem_top);
-            mem_top += mem_requirements.size;
+            struct VK_Buffer buf = vk_create_and_alloc_buffer(vk, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, sizeof(tri_verts));
             
             void *mapped_mem;
-            vkMapMemory(vk->device, mem, buffer_addr, mem_requirements.size, 0, &mapped_mem);
+            vkMapMemory(vk->device, vk->mem, buf.offset, buf.size, 0, &mapped_mem);
             memcpy(mapped_mem, tri_verts, sizeof(tri_verts));
-            vkUnmapMemory(vk->device, mem);
+            vkUnmapMemory(vk->device, vk->mem);
+
+            vk->tri_vert_buffer = buf;
         }
 
         // Index buffer
         {
-            VkBufferCreateInfo buffer_info = {
-                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                .flags = 0,
-                .size = sizeof(tri_indices),
-                .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                .sharingMode = VK_SHARING_MODE_EXCLUSIVE
-            };
-            
-            VK_CHECK(vkCreateBuffer(vk->device, &buffer_info, NULL, &vk->tri_index_buffer));
-            vk_push_deletable(vk, vkDestroyBuffer, vk->tri_index_buffer);
-            
-            VkMemoryRequirements mem_requirements;
-            vkGetBufferMemoryRequirements(vk->device, vk->tri_index_buffer, &mem_requirements);
-            
-            mem_top = align_address(mem_top, mem_requirements.alignment);
-            const size_t buffer_addr = mem_top;
-
-            vkBindBufferMemory(vk->device, vk->tri_index_buffer, mem, buffer_addr);
-            mem_top += mem_requirements.size;
+            struct VK_Buffer buf = vk_create_and_alloc_buffer(vk, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, sizeof(tri_indices));
 
             void *mapped_mem;
-            vkMapMemory(vk->device, mem, buffer_addr, mem_requirements.size, 0, &mapped_mem);
+            vkMapMemory(vk->device, vk->mem, buf.offset, buf.size, 0, &mapped_mem);
             memcpy(mapped_mem, tri_indices, sizeof(tri_indices));
-            vkUnmapMemory(vk->device, mem);
+            vkUnmapMemory(vk->device, vk->mem);
+
+            vk->tri_index_buffer = buf;
         }
     }
 }
@@ -921,10 +928,10 @@ static void render(struct Render_State *r, struct VK *vk)
 
 		vkCmdBeginRenderPass(cmdbuf, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
 
-		VkBuffer buffers[] = { vk->tri_vert_buffer };
+        VkBuffer buffers[] = { vk->tri_vert_buffer.handle };
 		VkDeviceSize offsets[] = { 0 };
 		vkCmdBindVertexBuffers(cmdbuf, 0, countof(buffers), buffers, offsets);
-		vkCmdBindIndexBuffer(cmdbuf, vk->tri_index_buffer, 0, VK_INDEX_TYPE_UINT16);
+        vkCmdBindIndexBuffer(cmdbuf, vk->tri_index_buffer.handle, 0, VK_INDEX_TYPE_UINT16);
 
 		if(r->colorful_tri) {
 			vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->rgb_pipeline);
