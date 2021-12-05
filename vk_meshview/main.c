@@ -65,10 +65,13 @@ struct VK {
 	/* Presentation */
 	VkSurfaceKHR surface;
 	VkFormat swapchain_format;
+	VkFormat depth_format;
 	VkExtent2D swapchain_extent;
 	VkSwapchainKHR swapchain;
 
 	VkRenderPass render_pass;
+	VkImage depth_image;
+	VkImageView depth_image_view;
 	VkImage swapchain_images[32];
 	VkImageView swapchain_image_views[32];
 	VkFramebuffer framebuffers[32];
@@ -89,6 +92,7 @@ struct VK {
 
 	/* Memory */
 	int mem_host_coherent_idx;
+	int mem_gpu_fast_idx;
     VkDeviceMemory mem;
     size_t mem_top;
 	
@@ -305,6 +309,17 @@ static VkPipeline vk_create_pipeline(struct VK *vk,
         .pAttachments = &color_blend_attachment,
     };
 
+    VkPipelineDepthStencilStateCreateInfo depth_stencil = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = VK_TRUE,
+        .depthWriteEnable = VK_TRUE,
+        .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+        .depthBoundsTestEnable = VK_FALSE, // TODO: Check what this does
+        .minDepthBounds = 0.0f,
+        .maxDepthBounds = 1.0f,
+        .stencilTestEnable = VK_FALSE
+    };
+
     VkGraphicsPipelineCreateInfo pipeline_info = {
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .stageCount = shader_stage_count,
@@ -315,6 +330,7 @@ static VkPipeline vk_create_pipeline(struct VK *vk,
         .pRasterizationState = &rasterizer_info,
         .pMultisampleState = &multisampling_info,
         .pColorBlendState = &color_blending,
+        .pDepthStencilState = &depth_stencil,
         .layout = layout,
         .subpass = 0,
         .basePipelineHandle = VK_NULL_HANDLE,
@@ -451,6 +467,65 @@ static void vk_init(struct VK *vk)
 		vk->physical_device = devices[0];
 	}
 
+    /* memory query */
+    {
+        VkPhysicalDeviceMemoryProperties mem_properties;
+        vkGetPhysicalDeviceMemoryProperties(vk->physical_device, &mem_properties);
+    
+        /* print info */
+        printf("Memory heaps:\n");
+        for(int i = 0; i < mem_properties.memoryHeapCount; ++i) {
+            printf("-> [%d] %zuMB\n", i, mem_properties.memoryHeaps[i].size / (1024 * 1024));
+        }
+        printf("\n");
+
+        printf("Memory types:\n");
+        for(int i = 0; i < mem_properties.memoryTypeCount; ++i) {
+            printf("-> [%d] Index: %d Flags:", i, mem_properties.memoryTypes[i].heapIndex);
+            int flags = mem_properties.memoryTypes[i].propertyFlags;
+            if(flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+                printf("DEVICE_LOCAL ");
+            if(flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+                printf("HOST_VISIBLE ");
+            if(flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+                printf("HOST_COHERENT ");
+            if(flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
+                printf("HOST_CACHED ");
+            if(flags & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT)
+                printf("LAZILY_ALLOCATED ");
+            printf("\n");
+        }
+        printf("\n");
+        
+        /* Choose a memory type that is host visible */
+        printf("Searching host visible, host coherent memory heap\n");
+        bool found = false;
+        for(int i = 0; i < mem_properties.memoryTypeCount; ++i) {
+            if(mem_properties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                vk->mem_host_coherent_idx = i;
+                found = true;
+                break;
+            }
+        }
+
+        CHECK(found, "Couldn't find host visible and coherent memory heap");
+        printf("-> Chose type %d (heap %d)\n", vk->mem_host_coherent_idx, mem_properties.memoryTypes[vk->mem_host_coherent_idx].heapIndex);
+        
+        /* Choose a memory type that is fast */
+        printf("Searching fast VRAM memory heap\n");
+        found = false;
+        for(int i = 0; i < mem_properties.memoryTypeCount; ++i) {
+            if(mem_properties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) &&
+               !(mem_properties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+            ) {
+                vk->mem_gpu_fast_idx = i;
+                found = true;
+            }
+        }
+        
+        printf("-> Chose type %d (heap %d)\n", vk->mem_gpu_fast_idx, mem_properties.memoryTypes[vk->mem_gpu_fast_idx].heapIndex);
+    }
+	
 	/* surface */
 	{
 		// TODO: Make sure we are allowed to have this before VkDevice creation
@@ -588,6 +663,64 @@ static void vk_init(struct VK *vk)
 		uint32_t image_count = capabilities.minImageCount;
 		CHECK(image_count < countof(vk->swapchain_image_views), "Minimum swapchain image count is too high");
 
+		VkExtent3D depth_image_extent = {
+			vk->swapchain_extent.width,
+			vk->swapchain_extent.height,
+			1
+		};
+
+		vk->depth_format = VK_FORMAT_D32_SFLOAT;
+
+		VkImageCreateInfo depth_image_create_info = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+			.imageType = VK_IMAGE_TYPE_2D,
+			.format = vk->depth_format,
+			.extent = depth_image_extent,
+			.mipLevels = 1,
+			.arrayLayers = 1,
+			.samples = VK_SAMPLE_COUNT_1_BIT,
+			.tiling = VK_IMAGE_TILING_OPTIMAL,
+			.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+		};	
+
+		VK_CHECK(vkCreateImage(vk->device, &depth_image_create_info, NULL, &vk->depth_image));
+		vk_push_deletable(vk, vkDestroyImage, vk->depth_image);
+
+        VkMemoryRequirements depth_image_mem_requirements;
+        vkGetImageMemoryRequirements(vk->device, vk->depth_image, &depth_image_mem_requirements);
+
+        VkMemoryAllocateInfo alloc_info = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = depth_image_mem_requirements.size,
+            .memoryTypeIndex = vk->mem_gpu_fast_idx
+        };
+
+        // NOTE: Allocating GPU memory here, currently only for depth buffer.
+        //       Once we have more things to put here (and we get to having staging buffers),
+        //       this will also need to be globally accessible with bookkeeping.
+        VkDeviceMemory fast_mem;
+        VK_CHECK(vkAllocateMemory(vk->device, &alloc_info, NULL, &fast_mem));
+        vk_push_deletable(vk, vkFreeMemory, fast_mem);
+
+        vkBindImageMemory(vk->device, vk->depth_image, fast_mem, 0);
+
+		VkImageViewCreateInfo depth_image_view_create_info = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			.image = vk->depth_image,
+			.format = vk->depth_format,
+			.subresourceRange = {
+				.baseMipLevel = 0,
+				.levelCount = 1,
+				.baseArrayLayer = 0,
+				.layerCount = 1,
+				.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT
+			}
+		};
+
+		VK_CHECK(vkCreateImageView(vk->device, &depth_image_view_create_info, NULL, &vk->depth_image_view));
+		vk_push_deletable(vk, vkDestroyImageView, vk->depth_image_view);
+
 		VkSwapchainCreateInfoKHR create_info = {
 			.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
 			.surface = vk->surface,
@@ -662,32 +795,52 @@ static void vk_init(struct VK *vk)
 
     /* render pass */
     {
-        VkAttachmentDescription color_attachment = {
-            .format = vk->swapchain_format,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+        VkAttachmentDescription attachments[] = {
+            {
+                // Colour
+                .format = vk->swapchain_format,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+            },
+            {
+                // Depth
+                .format = vk->depth_format,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .finalLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
+            }
         };
-
+        
         VkAttachmentReference color_attachment_ref = {
             .attachment = 0, // References the pAttachments array in the parent renderpass
             .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
         };
 
+        VkAttachmentReference depth_attachment_ref = {
+            .attachment = 1,
+            .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+        };
+
         VkSubpassDescription subpass = {
             .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
             .colorAttachmentCount = 1,
-            .pColorAttachments = &color_attachment_ref
+            .pColorAttachments = &color_attachment_ref,
+            .pDepthStencilAttachment = &depth_attachment_ref
         };
-
+       
         VkRenderPassCreateInfo render_pass_info = {
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-            .attachmentCount = 1,
-            .pAttachments = &color_attachment, // This is where VkAttachmentReference::attachment indexes into
+            .attachmentCount = countof(attachments),
+            .pAttachments = attachments, // This is where VkAttachmentReference::attachment indexes into
             .subpassCount = 1,
             .pSubpasses = &subpass
         };
@@ -724,14 +877,20 @@ static void vk_init(struct VK *vk)
         VkFramebufferCreateInfo framebuffer_info = {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .renderPass = vk->render_pass,
-            .attachmentCount = 1,
             .width = vk->swapchain_extent.width,
             .height = vk->swapchain_extent.height,
             .layers = 1
         };
 
         for(uint32_t i = 0; i < vk->swapchain_image_count; ++i) {
-            framebuffer_info.pAttachments = &vk->swapchain_image_views[i];
+            VkImageView attachments[] = {
+                vk->swapchain_image_views[i],
+                vk->depth_image_view
+            };
+            
+            framebuffer_info.pAttachments = attachments;
+            framebuffer_info.attachmentCount = countof(attachments);
+
             VK_CHECK(vkCreateFramebuffer(vk->device, &framebuffer_info, NULL, &vk->framebuffers[i]));
             vk_push_deletable(vk, vkDestroyFramebuffer, vk->framebuffers[i]);
         }
@@ -758,50 +917,6 @@ static void vk_init(struct VK *vk)
         vk_push_deletable(vk, vkDestroySemaphore, vk->render_semaphore);
     }
     
-    /* memory query */
-    {
-        VkPhysicalDeviceMemoryProperties mem_properties;
-        vkGetPhysicalDeviceMemoryProperties(vk->physical_device, &mem_properties);
-    
-        /* print info */
-        printf("Memory heaps:\n");
-        for(int i = 0; i < mem_properties.memoryHeapCount; ++i) {
-            printf("-> [%d] %zuMB\n", i, mem_properties.memoryHeaps[i].size / (1024 * 1024));
-        }
-        printf("\n");
-
-        printf("Memory types:\n");
-        for(int i = 0; i < mem_properties.memoryTypeCount; ++i) {
-            printf("-> [%d] Index: %d Flags:", i, mem_properties.memoryTypes[i].heapIndex);
-            int flags = mem_properties.memoryTypes[i].propertyFlags;
-            if(flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-                printf("DEVICE_LOCAL ");
-            if(flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
-                printf("HOST_VISIBLE ");
-            if(flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-                printf("HOST_COHERENT ");
-            if(flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
-                printf("HOST_CACHED ");
-            if(flags & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT)
-                printf("LAZILY_ALLOCATED ");
-            printf("\n");
-        }
-        printf("\n");
-        
-        /* Choose a buffer that is host visible */
-        bool found = false;
-        for(int i = 0; i < mem_properties.memoryTypeCount; ++i) {
-            if(mem_properties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-                vk->mem_host_coherent_idx = i;
-                found = true;
-                break;
-            }
-        }
-        
-        CHECK(found, "Couldn't find host visible and coherent memory heap");
-        printf("Chose type %d (heap %d)\n", vk->mem_host_coherent_idx, mem_properties.memoryTypes[vk->mem_host_coherent_idx].heapIndex);
-    }
-
     /* memory allocation */
     {
         // Allocate scratch memory
@@ -938,7 +1053,14 @@ static void render(struct Render_State *r, struct VK *vk)
 
 	VK_CHECK(vkBeginCommandBuffer(cmdbuf, &cmdbuf_begin_info));
 
-	VkClearValue clear_value = {0};
+	VkClearValue clear_values[] = {
+		{
+			.color = {0}
+		},
+		{
+			.depthStencil = {.depth = 1.0f}
+		}
+	};
 
 	VkRenderPassBeginInfo render_pass_info = {
 		.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -948,8 +1070,8 @@ static void render(struct Render_State *r, struct VK *vk)
 			.extent = vk->swapchain_extent
 		},
 		.framebuffer = vk->framebuffers[swapchain_index],
-		.clearValueCount = 1,
-		.pClearValues = &clear_value
+		.clearValueCount = countof(clear_values),
+		.pClearValues = clear_values
 	};
 
 	/* app-specific */
@@ -969,7 +1091,7 @@ static void render(struct Render_State *r, struct VK *vk)
         constants.model_matrix = glms_translate_make((vec3s){0.0f, y - 0.15f, 3.5f});
 		constants.model_matrix = glms_rotate(constants.model_matrix, glm_rad(r->frame_number), (vec3s){0.0f, 1.0f, 0.0f});
 
-		clear_value = (VkClearValue) {
+		clear_values[0] = (VkClearValue) {
 			.color.float32 = {0.26f * flash, 0.16f * flash, 0.45f * flash, 1.0f}
 		};
 
