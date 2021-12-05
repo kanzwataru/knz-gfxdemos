@@ -49,6 +49,13 @@ struct VK_Buffer {
     size_t size;
 };
 
+struct Mesh {
+    struct VK_Buffer vert_buf;
+    struct VK_Buffer index_buf;
+    uint32_t vert_count;
+    uint32_t index_count;
+};
+
 struct VK {
 	/* Instances and Handles */
 	VkInstance instance;
@@ -94,8 +101,7 @@ struct VK {
     VkPipeline flat_pipeline;
     VkPipeline rgb_pipeline;
     /* Vertex buffers and mesh data */
-    struct VK_Buffer tri_vert_buffer;
-    struct VK_Buffer tri_index_buffer;
+    struct Mesh tri_mesh;
     // --
 };
 
@@ -825,6 +831,11 @@ static void vk_init(struct VK *vk)
             0, 1, 2
         };
 
+        struct Mesh mesh = {
+            .index_count = countof(tri_indices),
+            .vert_count = countof(tri_verts)
+        };
+
         // Vertex buffer
         {
             struct VK_Buffer buf = vk_create_and_alloc_buffer(vk, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, sizeof(tri_verts));
@@ -834,7 +845,7 @@ static void vk_init(struct VK *vk)
             memcpy(mapped_mem, tri_verts, sizeof(tri_verts));
             vkUnmapMemory(vk->device, vk->mem);
 
-            vk->tri_vert_buffer = buf;
+            mesh.vert_buf = buf;
         }
 
         // Index buffer
@@ -846,8 +857,10 @@ static void vk_init(struct VK *vk)
             memcpy(mapped_mem, tri_indices, sizeof(tri_indices));
             vkUnmapMemory(vk->device, vk->mem);
 
-            vk->tri_index_buffer = buf;
+            mesh.index_buf = buf;
         }
+
+        vk->tri_mesh = mesh;
     }
 }
 
@@ -931,10 +944,10 @@ static void render(struct Render_State *r, struct VK *vk)
 
 		vkCmdBeginRenderPass(cmdbuf, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
 
-        VkBuffer buffers[] = { vk->tri_vert_buffer.handle };
+        VkBuffer buffers[] = { vk->tri_mesh.vert_buf.handle };
 		VkDeviceSize offsets[] = { 0 };
 		vkCmdBindVertexBuffers(cmdbuf, 0, countof(buffers), buffers, offsets);
-        vkCmdBindIndexBuffer(cmdbuf, vk->tri_index_buffer.handle, 0, VK_INDEX_TYPE_UINT16);
+        vkCmdBindIndexBuffer(cmdbuf, vk->tri_mesh.index_buf.handle, 0, VK_INDEX_TYPE_UINT16);
 
 		if(r->colorful_tri) {
 			vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->rgb_pipeline);
@@ -944,7 +957,7 @@ static void render(struct Render_State *r, struct VK *vk)
 		}
 
 		vkCmdPushConstants(cmdbuf, vk->empty_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
-		vkCmdDrawIndexed(cmdbuf, 3, 1, 0, 0, 0);
+        vkCmdDrawIndexed(cmdbuf, vk->tri_mesh.index_count, 1, 0, 0, 0);
 
 		vkCmdEndRenderPass(cmdbuf);
 	}
