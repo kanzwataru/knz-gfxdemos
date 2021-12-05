@@ -196,7 +196,7 @@ static VkPipeline vk_create_pipeline(struct VK *vk,
     VkVertexInputBindingDescription binding_descs[] = {
         {
             .binding = 0,
-            .stride = sizeof(float) * 6,
+            .stride = sizeof(float) * 8,
             .inputRate = VK_VERTEX_INPUT_RATE_VERTEX
         },
     };
@@ -796,10 +796,9 @@ static void vk_init(struct VK *vk)
         printf("Chose type %d (heap %d)\n", vk->mem_host_coherent_idx, mem_properties.memoryTypes[vk->mem_host_coherent_idx].heapIndex);
     }
 
-    /* app-specific init
-     * TODO: move this out */
+    /* memory allocation */
     {
-        // Allocate scratch memory        
+        // Allocate scratch memory
         VkMemoryAllocateInfo alloc_info = {
             .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
             .allocationSize = VRAM_POOL_SIZE,
@@ -810,12 +809,16 @@ static void vk_init(struct VK *vk)
         vk_push_deletable(vk, vkFreeMemory, vk->mem);
 
         vk->mem_top = 0;
+    }
 
+    /* app-specific init
+     * TODO: move this out */
+    {
         // Triangle data
         const float tri_verts[] = {
-             0.0f, -0.5f, 0.0f,     1.0f, 0.0f, 0.0f,
-             0.5f,  0.5f, 0.0f,     0.0f, 1.0f, 0.0f,
-            -0.5f,  0.5f, 0.0f,     0.0f, 0.0f, 1.0f
+             0.0f, -0.5f, 0.0f,     1.0f, 0.0f, 0.0f,    0.0f, 0.0f,
+             0.5f,  0.5f, 0.0f,     0.0f, 1.0f, 0.0f,    0.0f, 0.0f,
+            -0.5f,  0.5f, 0.0f,     0.0f, 0.0f, 1.0f,    0.0f, 0.0f
         };
 
         const uint16_t tri_indices[] = {
