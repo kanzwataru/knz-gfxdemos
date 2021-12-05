@@ -29,7 +29,7 @@ function(f_add_shader TARGET SHADER STAGE)
 
     #set(current-shader-path ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/${SHADER})
     #set(current-output-path ${CMAKE_BINARY_DIR}/shaders/${SHADER}.spv)
-    set(current-shader-path ${CMAKE_CURRENT_SOURCE_DIR}/${TARGET}/${SHADER}.glsl)
+    set(current-shader-path ${CMAKE_CURRENT_SOURCE_DIR}/${TARGET}/shaders/${SHADER}.glsl)
     set(current-output-path ${CMAKE_BINARY_DIR}/${TARGET}/shaders/${SHADER}.spv)
 
     # Add a custom command to compile GLSL to SPIR-V.
@@ -60,8 +60,8 @@ f_add_shader(vk_hello rgb_vert vert)
 # vk_meshview
 f_add_target(vk_meshview vk_meshview/main.c)
 
-f_add_shader(vk_meshview shaders/flat_frag frag)
-f_add_shader(vk_meshview shaders/flat_vert vert)
+f_add_shader(vk_meshview flat_frag frag)
+f_add_shader(vk_meshview flat_vert vert)
 
-f_add_shader(vk_meshview shaders/rgb_frag frag)
-f_add_shader(vk_meshview shaders/rgb_vert vert)
+f_add_shader(vk_meshview rgb_frag frag)
+f_add_shader(vk_meshview rgb_vert vert)

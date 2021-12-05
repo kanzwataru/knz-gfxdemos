@@ -3,7 +3,6 @@
 layout (location = 0) in vec3 position;
 
 layout (push_constant) uniform constants {
-    vec4 data;
     mat4 model_matrix;
     mat4 view_proj_matrix;
 };

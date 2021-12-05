@@ -96,7 +96,6 @@ struct Render_State {
 };
 
 struct Push_Constant_Data {
-	vec4s data;
 	mat4s model_matrix;
 	mat4s view_proj_matrix;
 };
@@ -908,7 +907,6 @@ static void render(struct Render_State *r, struct VK *vk)
 		proj.raw[1][1] *= -1;
 
 		struct Push_Constant_Data constants = {
-			.data = {0, 0, 0, 0},
 			.model_matrix = glms_mat4_identity(),
 			.view_proj_matrix = glms_mat4_mul(proj, view)
 		};
