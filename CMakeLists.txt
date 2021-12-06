@@ -49,12 +49,21 @@ function(f_add_shader TARGET SHADER STAGE)
 endfunction()
 
 function(f_add_data TARGET FILE)
+    set(current-input-path ${CMAKE_CURRENT_SOURCE_DIR}/${TARGET}/data/${FILE})
+    set(current-output-path ${CMAKE_BINARY_DIR}/${TARGET}/data/${FILE})
+
+    get_filename_component(current-output-dir ${current-output-path} DIRECTORY)
+    file(MAKE_DIRECTORY ${current-output-dir})
+
     add_custom_command(
-        TARGET ${TARGET}
-        POST_BUILD
-        COMMAND ${CMAKE_COMMAND}
-        ARGS -E copy ${CMAKE_CURRENT_SOURCE_DIR}/${TARGET}/${FILE} ${CMAKE_BINARY_DIR}/${TARGET}/${FILE}
+        OUTPUT ${current-output-path}
+        COMMAND ${CMAKE_COMMAND} ARGS -E copy ${current-input-path} ${current-output-path}
+        DEPENDS ${current-input-path}
+        IMPLICIT_DEPENDS CXX ${current-input-path}
     )
+
+    set_source_files_properties(${current-output-path} PROPERTIES GENERATED TRUE)
+    target_sources(${TARGET} PRIVATE ${current-output-path} ${current-input-path})
 endfunction()
 
 # vk_hello
@@ -75,5 +84,5 @@ f_add_shader(vk_meshview flat_vert vert)
 f_add_shader(vk_meshview lit_frag frag)
 f_add_shader(vk_meshview lit_vert vert)
 
-f_add_data(vk_meshview data/cube.bin)
-f_add_data(vk_meshview data/suzanne.bin)
+f_add_data(vk_meshview cube.bin)
+f_add_data(vk_meshview suzanne.bin)
