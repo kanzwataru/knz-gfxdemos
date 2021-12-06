@@ -76,3 +76,4 @@ f_add_shader(vk_meshview lit_frag frag)
 f_add_shader(vk_meshview lit_vert vert)
 
 f_add_data(vk_meshview data/cube.bin)
+f_add_data(vk_meshview data/suzanne.bin)

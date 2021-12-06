@@ -966,7 +966,7 @@ static void vk_init(struct VK *vk)
         const int index_buffer_size = sizeof(index_buffer_data);
 #else
         uint32_t file_size;
-        char *mesh_data = file_load_binary("data/cube.bin", &file_size);
+        char *mesh_data = file_load_binary("data/suzanne.bin", &file_size);
 
         char *p = mesh_data;
         uint32_t vert_count = *(uint32_t *)p;
