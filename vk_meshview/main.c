@@ -40,7 +40,7 @@ struct VK_Deletion_Entry {
 struct VK_Deletion_Queue {
     // TODO: This should chain to another block or use a dynamic allocation
     struct VK_Deletion_Entry entries[4096];
-    int entries_top;
+    uint32_t entries_top;
 };
 
 struct VK_Buffer {
@@ -480,13 +480,13 @@ static void vk_init(struct VK *vk)
     
         /* print info */
         printf("Memory heaps:\n");
-        for(int i = 0; i < mem_properties.memoryHeapCount; ++i) {
+        for(uint32_t i = 0; i < mem_properties.memoryHeapCount; ++i) {
             printf("-> [%d] %zuMB\n", i, mem_properties.memoryHeaps[i].size / (1024 * 1024));
         }
         printf("\n");
 
         printf("Memory types:\n");
-        for(int i = 0; i < mem_properties.memoryTypeCount; ++i) {
+        for(uint32_t i = 0; i < mem_properties.memoryTypeCount; ++i) {
             printf("-> [%d] Index: %d Flags:", i, mem_properties.memoryTypes[i].heapIndex);
             int flags = mem_properties.memoryTypes[i].propertyFlags;
             if(flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
@@ -506,7 +506,7 @@ static void vk_init(struct VK *vk)
         /* Choose a memory type that is host visible */
         printf("Searching host visible, host coherent memory heap\n");
         bool found = false;
-        for(int i = 0; i < mem_properties.memoryTypeCount; ++i) {
+        for(uint32_t i = 0; i < mem_properties.memoryTypeCount; ++i) {
             if(mem_properties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
                 vk->mem_host_coherent_idx = i;
                 found = true;
@@ -520,7 +520,7 @@ static void vk_init(struct VK *vk)
         /* Choose a memory type that is fast */
         printf("Searching fast VRAM memory heap\n");
         found = false;
-        for(int i = 0; i < mem_properties.memoryTypeCount; ++i) {
+        for(uint32_t i = 0; i < mem_properties.memoryTypeCount; ++i) {
             if(mem_properties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) &&
                !(mem_properties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
             ) {
@@ -606,7 +606,7 @@ static void vk_init(struct VK *vk)
 		}
 
 		/* device features */
-		VkPhysicalDeviceFeatures device_features = {0};
+        //VkPhysicalDeviceFeatures device_features = {0};
 
 		/* create */
 		VkDeviceCreateInfo create_info = {
