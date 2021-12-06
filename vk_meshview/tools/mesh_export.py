@@ -59,6 +59,14 @@ def extract_vert_index_buffers(mesh_ob):
             normal = (normal.x, normal.y, normal.z)
             uv = (uv.x, uv.y)
 
+            # :NOTE:
+            # Here we use a hash table to quickly find duplicated vertices.
+            # This uses direct float equality under-the-hood so it might be better
+            # to supply a comparison function that has a threshold.
+            #
+            # After switching from the Blender vector classes to float tuples,
+            # the number of vertices increased by around 3%, hinting that maybe Blender was
+            # indeed using a threshold for coord comparisons.
             vert = pos, normal, uv
             found_vertex_idx = vertex_buffer_index_hash.get(vert, None)
 
