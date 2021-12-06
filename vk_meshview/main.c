@@ -748,8 +748,9 @@ static void vk_init(struct VK *vk)
 		VK_CHECK(vkCreateSwapchainKHR(vk->device, &create_info, NULL, &vk->swapchain));
 		vk_push_deletable(vk, vkDestroySwapchainKHR, vk->swapchain);
 		
-		// NOTE: There is a warning on Intel GPUs that suggests this function does actually want to be called twice
+        // NOTE: There is a warning on Intel GPUs that suggests this function does actually want to be called twice
 		vk->swapchain_image_count = image_count;
+        vkGetSwapchainImagesKHR(vk->device, vk->swapchain, &vk->swapchain_image_count, NULL);
 		VK_CHECK(vkGetSwapchainImagesKHR(vk->device, vk->swapchain, &vk->swapchain_image_count, vk->swapchain_images));
 
 		vk->swapchain_format = format.format;
