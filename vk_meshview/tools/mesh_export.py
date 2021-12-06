@@ -45,6 +45,7 @@ def extract_vert_index_buffers(mesh_ob):
     uv_layer = mesh.uv_layers.active.data
 
     vertex_buffer = []
+    vertex_buffer_index_hash = {}
     index_buffer = []
 
     for poly in mesh.polygons:
@@ -53,18 +54,22 @@ def extract_vert_index_buffers(mesh_ob):
             normal = mesh.loops[idx].normal
             uv = uv_layer[idx].uv
 
-            found_vertex_idx = None
-            for i, vert in enumerate(vertex_buffer):
-                # TODO: Fuzzy matching for working around floating point inaccuracy maybe?
-                other_pos, other_normal, other_uv = vert
-                if other_pos == pos and other_normal == normal and other_uv == uv:
-                    found_vertex_idx = i
-            
+            # TODO PERF: Maybe roll these all into a flat vert array (even the vertex_buffer itself)
+            pos = (pos.x, pos.y, pos.z)
+            normal = (normal.x, normal.y, normal.z)
+            uv = (uv.x, uv.y)
+
+            vert = pos, normal, uv
+            found_vertex_idx = vertex_buffer_index_hash.get(vert, None)
+
             if found_vertex_idx != None:
                 index_buffer.append(found_vertex_idx)
             else:
-                index_buffer.append(len(vertex_buffer))
-                vertex_buffer.append((pos, normal, uv))
+                vert_index = len(vertex_buffer)
+                
+                index_buffer.append(vert_index)
+                vertex_buffer_index_hash[vert] = vert_index
+                vertex_buffer.append(vert)
 
     return vertex_buffer, index_buffer
 
@@ -90,7 +95,7 @@ def write_data(path, vertex_buffer, index_buffer):
     # Vertex buffer
     for vert in vertex_buffer:
         pos, normal, uv = vert
-        f.write(struct.pack('fff fff ff', pos.x, pos.y, pos.z, normal.x, normal.y, normal.z, uv.x, uv.y))
+        f.write(struct.pack('fff fff ff', pos[0], pos[1], pos[2], normal[0], normal[1], normal[2], uv[0], uv[1]))
     
     # Index buffer
     for idx in index_buffer:
@@ -106,6 +111,7 @@ def export_selected(path):
     #print_buffers(vertex_buffer, index_buffer)
     write_data(path, vertex_buffer, index_buffer)
 
+    print('Verts: {}\nIndices: {}'.format(len(vertex_buffer), len(index_buffer)))
 
 if __name__ == '__main__':
     path = bpy.data.filepath.replace('.blend', '.bin')
