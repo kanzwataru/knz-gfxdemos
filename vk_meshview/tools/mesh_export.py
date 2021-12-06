@@ -3,6 +3,7 @@ Super bare-bones mesh exporter script.
 Exports into a minimal data format ready to upload to the GPU.
 Vertices are deduplicated, and using index buffer.
 Mesh is triangulated. Hard edges are preserved.
+Coordinates are mesh-local, converted to Y-up.
 
 --- Data Format ---
 VERTEX_COUNT:  u32
@@ -20,23 +21,32 @@ export a file in the same directory as the .blend file except with .bin as the e
 Alternatively you can manually call extract_vert_index_buffers and write_data inside your own script.
 """
 import os
+import struct
 
 import bpy
 import bmesh
-import struct
+import mathutils
+
 
 def extract_vert_index_buffers(mesh_ob):
     depsgraph = bpy.context.evaluated_depsgraph_get()
     scene = bpy.context.scene
 
     # NOTE: We get the evaluated mesh from the depsgraph, so the below triangulation does not overwrite the mesh in the scene
-    # TODO: Check if we need to free anything at the end.
     ob = mesh_ob.evaluated_get(depsgraph)
+
+    y_up_conv_mat = mathutils.Matrix((
+        (1.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 1.0, 0.0),
+        (0.0, 1.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 1.0)
+    ))
 
     mesh = ob.to_mesh()
     bm = bmesh.new()
     bm.from_mesh(mesh)
     bmesh.ops.triangulate(bm, faces=bm.faces)
+    bm.transform(y_up_conv_mat) # Comment this out if you don't want Y-up
     bm.to_mesh(mesh)
     bm.free()
 
@@ -119,7 +129,8 @@ def export_selected(path):
     #print_buffers(vertex_buffer, index_buffer)
     write_data(path, vertex_buffer, index_buffer)
 
-    print('Verts: {}\nIndices: {}'.format(len(vertex_buffer), len(index_buffer)))
+    print('Verts: {}\nIndices: {}\nOutput path: {}'.format(len(vertex_buffer), len(index_buffer), path))
+
 
 if __name__ == '__main__':
     path = bpy.data.filepath.replace('.blend', '.bin')
