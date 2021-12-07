@@ -106,6 +106,8 @@ struct VK {
     VkPipeline lit_pipeline;
     /* Vertex buffers and mesh data */
     struct Mesh tri_mesh;
+
+    struct VK_Buffer global_uniform_buffer;
     // --
 };
 
@@ -117,6 +119,12 @@ struct Render_State {
 struct Push_Constant_Data {
 	mat4s model_matrix;
 	mat4s view_proj_matrix;
+};
+
+struct Global_Uniform_Data {
+    mat4s view_mat;
+    mat4s proj_mat;
+    mat4s view_proj_mat;
 };
 
 static struct VK s_vk;
@@ -953,41 +961,12 @@ static void vk_destroy(struct VK *vk)
 	vkDestroyInstance(vk->instance, NULL);
 }
 
-static void scene_init(struct Render_State *r, struct VK *vk)
+static struct Mesh upload_mesh_from_raw_data(struct VK *vk, const char *mesh_data)
 {
-	vk->flat_pipeline = vk_create_pipeline_and_shaders(vk, "shaders/flat_vert.spv", "shaders/flat_frag.spv", vk->empty_pipeline_layout);
-	vk->lit_pipeline = vk_create_pipeline_and_shaders(vk, "shaders/lit_vert.spv", "shaders/lit_frag.spv", vk->empty_pipeline_layout);
-
-
-    /* Geometry init */
-
-    // Triangle data
     const size_t vert_buffer_stride = 8;
     const size_t vert_buffer_stride_bytes = vert_buffer_stride * sizeof(float);
 
-#if 0
-    const float vert_buffer_data[] = {
-         0.0f, -0.5f, 0.0f,     1.0f, 0.0f, 0.0f,    0.0f, 0.0f,
-         0.5f,  0.5f, 0.0f,     0.0f, 1.0f, 0.0f,    0.0f, 0.0f,
-        -0.5f,  0.5f, 0.0f,     0.0f, 0.0f, 1.0f,    0.0f, 0.0f
-    };
-
-    const uint16_t index_buffer_data[] = {
-        0, 1, 2
-    };
-
-    struct Mesh mesh = {
-        .vert_count = countof(vert_buffer_data),
-        .index_count = countof(index_buffer_data)
-    };
-
-    const int vert_buffer_size = sizeof(vert_buffer_data);
-    const int index_buffer_size = sizeof(index_buffer_data);
-#else
-    uint32_t file_size;
-    char *mesh_data = file_load_binary("data/suzanne.bin", &file_size);
-
-    char *p = mesh_data;
+    const char *p = mesh_data;
     uint32_t vert_count = *(uint32_t *)p;
     p += sizeof(vert_count);
 
@@ -1006,7 +985,6 @@ static void scene_init(struct Render_State *r, struct VK *vk)
         .vert_count = vert_count,
         .index_count = index_count
     };
-#endif
 
     // Vertex buffer
     {
@@ -1032,7 +1010,19 @@ static void scene_init(struct Render_State *r, struct VK *vk)
         mesh.index_buf = buf;
     }
 
-    vk->tri_mesh = mesh;
+    return mesh;
+}
+
+static void scene_init(struct Render_State *r, struct VK *vk)
+{
+	vk->flat_pipeline = vk_create_pipeline_and_shaders(vk, "shaders/flat_vert.spv", "shaders/flat_frag.spv", vk->empty_pipeline_layout);
+	vk->lit_pipeline = vk_create_pipeline_and_shaders(vk, "shaders/lit_vert.spv", "shaders/lit_frag.spv", vk->empty_pipeline_layout);
+
+    /* Geometry init */
+    uint32_t file_size;
+    char *mesh_data = file_load_binary("data/suzanne.bin", &file_size);
+    vk->tri_mesh = upload_mesh_from_raw_data(vk, mesh_data);
+    free(mesh_data);
 }
 
 static void render(struct Render_State *r, struct VK *vk)
