@@ -104,14 +104,18 @@ struct VK {
 
 	// -- TODO: Split out these app-specific things
     /* Pipeline and Shaders */
-    VkPipelineLayout empty_pipeline_layout;
+    VkPipelineLayout simple_piepline_layout;
     VkPipeline flat_pipeline;
     VkPipeline lit_pipeline;
+
     /* Vertex buffers and mesh data */
-    struct Mesh tri_mesh;
+    struct Mesh meshes[512];
+    int mesh_count;
+    
     /* Descriptors */
     VkDescriptorSet global_desc;
     VkDescriptorSetLayout global_desc_layout;
+    
     /* Buffers */
     struct VK_Buffer global_uniform_buffer;
     // --
@@ -119,7 +123,8 @@ struct VK {
 
 struct Render_State {
 	uint64_t frame_number;
-	bool colorful_tri;
+	int mesh_idx;
+	bool unlit_shader;
 };
 
 struct Push_Constant_Data {
@@ -937,8 +942,8 @@ static void vk_init(struct VK *vk)
             .pPushConstantRanges = ranges
         };
 
-        VK_CHECK(vkCreatePipelineLayout(vk->device, &pipeline_layout_info, NULL, &vk->empty_pipeline_layout));
-        vk_push_deletable(vk, vkDestroyPipelineLayout, vk->empty_pipeline_layout);
+        VK_CHECK(vkCreatePipelineLayout(vk->device, &pipeline_layout_info, NULL, &vk->simple_piepline_layout));
+        vk_push_deletable(vk, vkDestroyPipelineLayout, vk->simple_piepline_layout);
     }
 
     /* framebuffers */
@@ -1079,14 +1084,14 @@ static struct Mesh upload_mesh_from_raw_data(struct VK *vk, const char *mesh_dat
 
 static void scene_init(struct Render_State *r, struct VK *vk)
 {
-	vk->flat_pipeline = vk_create_pipeline_and_shaders(vk, "shaders/flat_vert.spv", "shaders/flat_frag.spv", vk->empty_pipeline_layout);
-	vk->lit_pipeline = vk_create_pipeline_and_shaders(vk, "shaders/lit_vert.spv", "shaders/lit_frag.spv", vk->empty_pipeline_layout);
+	vk->flat_pipeline = vk_create_pipeline_and_shaders(vk, "shaders/flat_vert.spv", "shaders/flat_frag.spv", vk->simple_piepline_layout);
+	vk->lit_pipeline = vk_create_pipeline_and_shaders(vk, "shaders/lit_vert.spv", "shaders/lit_frag.spv", vk->simple_piepline_layout);
 
     /* Geometry init */
     {
         uint32_t file_size;
         char *mesh_data = file_load_binary("data/suzanne.bin", &file_size);
-        vk->tri_mesh = upload_mesh_from_raw_data(vk, mesh_data);
+        vk->meshes[vk->mesh_count++] = upload_mesh_from_raw_data(vk, mesh_data);
         free(mesh_data);
     }
     
@@ -1187,22 +1192,24 @@ static void render(struct Render_State *r, struct VK *vk)
 		/* record commands */
 		vkCmdBeginRenderPass(cmdbuf, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
 
-        VkBuffer buffers[] = { vk->tri_mesh.vert_buf.handle };
+        struct Mesh *mesh = &vk->meshes[r->mesh_idx];
+        
+        VkBuffer buffers[] = { mesh->vert_buf.handle };
 		VkDeviceSize offsets[] = { 0 };
 		vkCmdBindVertexBuffers(cmdbuf, 0, countof(buffers), buffers, offsets);
-        vkCmdBindIndexBuffer(cmdbuf, vk->tri_mesh.index_buf.handle, 0, VK_INDEX_TYPE_UINT16);
+        vkCmdBindIndexBuffer(cmdbuf, mesh->index_buf.handle, 0, VK_INDEX_TYPE_UINT16);
 
-		if(r->colorful_tri) {
-			vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->lit_pipeline);
-		}
-		else {
+		if(r->unlit_shader) {
 			vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->flat_pipeline);
 		}
-		
-		vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->empty_pipeline_layout, 0, 1, &vk->global_desc, 0, NULL);
+		else {
+			vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->lit_pipeline);
+		}
 
-		vkCmdPushConstants(cmdbuf, vk->empty_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
-        vkCmdDrawIndexed(cmdbuf, vk->tri_mesh.index_count, 1, 0, 0, 0);
+		vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->simple_piepline_layout, 0, 1, &vk->global_desc, 0, NULL);
+
+		vkCmdPushConstants(cmdbuf, vk->simple_piepline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
+        vkCmdDrawIndexed(cmdbuf, mesh->index_count, 1, 0, 0, 0);
 
 		vkCmdEndRenderPass(cmdbuf);
 	}
@@ -1266,7 +1273,7 @@ int main(int argc, char **argv)
 			}
 			else if(event.type == SDL_KEYDOWN) {
 				if(event.key.keysym.sym == SDLK_SPACE) {
-					s_render_state.colorful_tri = !s_render_state.colorful_tri;
+					s_render_state.unlit_shader = !s_render_state.unlit_shader;
 				}
 			}
 		}
