@@ -528,31 +528,63 @@ static void vk_init(struct VK *vk)
         printf("\n");
         
         /* Choose a memory type that is host visible */
-        printf("Searching host visible, host coherent memory heap\n");
+        printf("Searching HOST_VISIBLE | HOST_COHERENT | HOST_CACHED, memory heap\n");
         bool found = false;
+#if 1
         for(uint32_t i = 0; i < mem_properties.memoryTypeCount; ++i) {
-            if(mem_properties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            if(mem_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT &&
+               mem_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT &&
+               mem_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT
+            ) {
                 vk->mem_host_coherent_idx = i;
                 found = true;
                 break;
             }
+        }
+#endif
+
+        if(!found) {
+            printf("Falling back to un-cached HOST_VISIBLE | HOST_COHERENT memory heap\n");
+
+            for(uint32_t i = 0; i < mem_properties.memoryTypeCount; ++i) {
+                if(mem_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT &&
+                   mem_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+                ) {
+                    vk->mem_host_coherent_idx = i;
+                    found = true;
+                    break;
+                }
+            }            
         }
 
         CHECK(found, "Couldn't find host visible and coherent memory heap");
         printf("-> Chose type %d (heap %d)\n", vk->mem_host_coherent_idx, mem_properties.memoryTypes[vk->mem_host_coherent_idx].heapIndex);
         
         /* Choose a memory type that is fast */
-        printf("Searching fast VRAM memory heap\n");
+        printf("Searching DEVICE_LOCAL and not HOST_VISIBLE memory heap\n");
         found = false;
         for(uint32_t i = 0; i < mem_properties.memoryTypeCount; ++i) {
-            if(mem_properties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) &&
-               !(mem_properties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+            if(mem_properties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
+               !(mem_properties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
             ) {
                 vk->mem_gpu_fast_idx = i;
                 found = true;
+                break;
             }
         }
-        
+
+        if(!found) {
+            printf("Falling back to any DEVICE_LOCAL, even if HOST_VISIBLE (is this an integrated card?)\n");
+            for(uint32_t i = 0; i < mem_properties.memoryTypeCount; ++i) {
+                if(mem_properties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+                    vk->mem_gpu_fast_idx = i;
+                    found = true;
+                    break;
+                }
+            }   
+        }
+
+        CHECK(found, "Couldn't find device local memory");
         printf("-> Chose type %d (heap %d)\n", vk->mem_gpu_fast_idx, mem_properties.memoryTypes[vk->mem_gpu_fast_idx].heapIndex);
     }
 	
