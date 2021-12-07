@@ -31,5 +31,4 @@ Each sample program is in its own folder, as it's own target.
 ## Dependencies (a.k.a. Liabilities)
 * CGLM (vendored)
 * LunarG SDK
-* glslc
 * CMake
