@@ -143,6 +143,12 @@ static SDL_Window *s_window;
 
 #define countof(x) (sizeof(x) / sizeof(x[0]))
 
+/*
+#define MIN(a_, b_) ((a_) < (b_) ? (a_) : (b_))
+#define MAX(a_, b_) ((a_) > (b_) ? (a_) : (b_))
+#define CLAMP(v_, min_, max_) (MAX(min_, MIN(v_, max_)))
+*/
+
 #define VK_CHECK(x_) \
 	do {\
 		VkResult err = x_;\
@@ -1089,12 +1095,20 @@ static void scene_init(struct Render_State *r, struct VK *vk)
 
     /* Geometry init */
     {
-        uint32_t file_size;
-        char *mesh_data = file_load_binary("data/suzanne.bin", &file_size);
-        vk->meshes[vk->mesh_count++] = upload_mesh_from_raw_data(vk, mesh_data);
-        free(mesh_data);
+        const char *mesh_paths[] = {
+            "data/suzanne.bin",
+            "data/cube.bin"
+        };
+
+        for(int i = 0; i < countof(mesh_paths); ++i) {
+            uint32_t file_size;
+   
+            char *mesh_data = file_load_binary(mesh_paths[i], &file_size);
+            vk->meshes[vk->mesh_count++] = upload_mesh_from_raw_data(vk, mesh_data);
+            free(mesh_data);            
+        }
     }
-    
+
     /* Uniform buffer init */
     {
         vk->global_uniform_buffer = vk_create_and_alloc_buffer(vk, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(struct Global_Uniform_Data));
@@ -1261,8 +1275,11 @@ int main(int argc, char **argv)
 							    SDL_WINDOWPOS_UNDEFINED,
 							    WIDTH, HEIGHT, SDL_WINDOW_VULKAN);
 
-	vk_init(&s_vk);
-	scene_init(&s_render_state, &s_vk);
+	struct VK *vk = &s_vk;
+	struct Render_State *r = &s_render_state;
+
+	vk_init(vk);
+	scene_init(r, vk);
 
 	bool running = true;
 	while(running) {
@@ -1272,18 +1289,26 @@ int main(int argc, char **argv)
 				running = false;
 			}
 			else if(event.type == SDL_KEYDOWN) {
-				if(event.key.keysym.sym == SDLK_SPACE) {
-					s_render_state.unlit_shader = !s_render_state.unlit_shader;
+				switch(event.key.keysym.sym) {
+				case SDLK_SPACE:
+					r->unlit_shader = !r->unlit_shader;
+					break;
+				case SDLK_LEFT:
+					r->mesh_idx = (r->mesh_idx - 1) >= 0 ? (r->mesh_idx - 1) : (vk->mesh_count - 1);
+					break;
+				case SDLK_RIGHT:
+					r->mesh_idx = (r->mesh_idx + 1) % vk->mesh_count;
+					break;
 				}
 			}
 		}
 
-		render(&s_render_state, &s_vk);
+		render(r, vk);
 
 		++s_render_state.frame_number;
 	}
 
-	vk_destroy(&s_vk);
+	vk_destroy(vk);
 	SDL_DestroyWindow(s_window);
 	SDL_Quit();
 
