@@ -95,7 +95,10 @@ struct VK {
 	int mem_gpu_fast_idx;
     VkDeviceMemory mem;
     size_t mem_top;
-	
+
+	/* Descriptor */
+	VkDescriptorPool desc_pool;
+
 	/* Resources */
 	struct VK_Deletion_Queue deletion_queue;
 
@@ -106,7 +109,10 @@ struct VK {
     VkPipeline lit_pipeline;
     /* Vertex buffers and mesh data */
     struct Mesh tri_mesh;
-
+    /* Descriptors */
+    VkDescriptorSet global_desc;
+    VkDescriptorSetLayout global_desc_layout;
+    /* Buffers */
     struct VK_Buffer global_uniform_buffer;
     // --
 };
@@ -118,7 +124,6 @@ struct Render_State {
 
 struct Push_Constant_Data {
 	mat4s model_matrix;
-	mat4s view_proj_matrix;
 };
 
 struct Global_Uniform_Data {
@@ -864,6 +869,55 @@ static void vk_init(struct VK *vk)
         vk_push_deletable(vk, vkDestroyRenderPass, vk->render_pass);
     }
 
+    /* descriptors */
+    {
+        // TODO: Make a function for creating this too, since it's app-specific
+        /* descriptor layouts */
+        VkDescriptorSetLayoutBinding bindings[] = {
+            {
+                .binding = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
+            }
+        };
+
+        VkDescriptorSetLayoutCreateInfo desc_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = countof(bindings),
+            .pBindings = bindings,
+            .flags = 0
+        };
+
+        VK_CHECK(vkCreateDescriptorSetLayout(vk->device, &desc_info, NULL, &vk->global_desc_layout));
+        
+        /* descriptor pool */
+        VkDescriptorPoolSize sizes[] = {
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10 }
+        };
+
+        VkDescriptorPoolCreateInfo pool_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .flags = 0,
+            .maxSets = 10,
+            .poolSizeCount = countof(sizes),
+            .pPoolSizes = sizes
+        };
+        
+        VK_CHECK(vkCreateDescriptorPool(vk->device, &pool_info, NULL, &vk->desc_pool));
+
+        /* descriptors */
+        // NOTE: The actual buffer is created way after in scene_init, so this just allocates the descriptor for use later
+        VkDescriptorSetAllocateInfo alloc_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = vk->desc_pool,
+            .descriptorSetCount = 1,
+            .pSetLayouts = &vk->global_desc_layout,
+        };
+        
+        VK_CHECK(vkAllocateDescriptorSets(vk->device, &alloc_info, &vk->global_desc));
+    }
+
 	/* pipeline layout */
 	{
 		// TODO: Make a function for creating this too, since it's app-specific
@@ -877,8 +931,8 @@ static void vk_init(struct VK *vk)
 
 		VkPipelineLayoutCreateInfo pipeline_layout_info = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-            .setLayoutCount = 0,
-            .pSetLayouts = NULL,
+            .setLayoutCount = 1,
+            .pSetLayouts = &vk->global_desc_layout,
             .pushConstantRangeCount = countof(ranges),
             .pPushConstantRanges = ranges
         };
@@ -961,6 +1015,16 @@ static void vk_destroy(struct VK *vk)
 	vkDestroyInstance(vk->instance, NULL);
 }
 
+static void vk_update_buffer(struct VK *vk, struct VK_Buffer buf, void *data, size_t offset, size_t size)
+{
+    assert(offset + size <= buf.size);
+    
+    void *mapped_mem;
+    vkMapMemory(vk->device, vk->mem, buf.offset, buf.size, 0, &mapped_mem);
+    memcpy(mapped_mem + offset, data, size);
+    vkUnmapMemory(vk->device, vk->mem);	
+}
+
 static struct Mesh upload_mesh_from_raw_data(struct VK *vk, const char *mesh_data)
 {
     const size_t vert_buffer_stride = 8;
@@ -1019,10 +1083,34 @@ static void scene_init(struct Render_State *r, struct VK *vk)
 	vk->lit_pipeline = vk_create_pipeline_and_shaders(vk, "shaders/lit_vert.spv", "shaders/lit_frag.spv", vk->empty_pipeline_layout);
 
     /* Geometry init */
-    uint32_t file_size;
-    char *mesh_data = file_load_binary("data/suzanne.bin", &file_size);
-    vk->tri_mesh = upload_mesh_from_raw_data(vk, mesh_data);
-    free(mesh_data);
+    {
+        uint32_t file_size;
+        char *mesh_data = file_load_binary("data/suzanne.bin", &file_size);
+        vk->tri_mesh = upload_mesh_from_raw_data(vk, mesh_data);
+        free(mesh_data);
+    }
+    
+    /* Uniform buffer init */
+    {
+        vk->global_uniform_buffer = vk_create_and_alloc_buffer(vk, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(struct Global_Uniform_Data));
+        
+        VkDescriptorBufferInfo desc_buf_info = {
+            .buffer = vk->global_uniform_buffer.handle,
+            .offset = 0,
+            .range = sizeof(struct Global_Uniform_Data),
+        };
+        
+        VkWriteDescriptorSet set_write = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstBinding = 0,
+            .dstSet = vk->global_desc,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .pBufferInfo = &desc_buf_info
+        };
+        
+        vkUpdateDescriptorSets(vk->device, 1, &set_write, 0, NULL);
+    }
 }
 
 static void render(struct Render_State *r, struct VK *vk)
@@ -1050,12 +1138,8 @@ static void render(struct Render_State *r, struct VK *vk)
 	VK_CHECK(vkBeginCommandBuffer(cmdbuf, &cmdbuf_begin_info));
 
 	VkClearValue clear_values[] = {
-		{
-			.color = {0}
-		},
-		{
-			.depthStencil = {.depth = 1.0f}
-		}
+		{ .color = {0} },
+		{ .depthStencil = {.depth = 1.0f} }
 	};
 
 	VkRenderPassBeginInfo render_pass_info = {
@@ -1072,6 +1156,7 @@ static void render(struct Render_State *r, struct VK *vk)
 
 	/* app-specific */
 	{
+		/* update state and set up data */
 		const float flash = fabs(sinf(r->frame_number / 120.0f));
 		
 		mat4s view = glms_mat4_identity();
@@ -1080,17 +1165,26 @@ static void render(struct Render_State *r, struct VK *vk)
 
 		struct Push_Constant_Data constants = {
 			.model_matrix = glms_mat4_identity(),
-			.view_proj_matrix = glms_mat4_mul(proj, view)
 		};
 
 		const float y = sinf(r->frame_number / 40.0f) * 0.25f;
         constants.model_matrix = glms_translate_make((vec3s){0.0f, y - 0.15f, 3.5f});
 		constants.model_matrix = glms_rotate(constants.model_matrix, glm_rad(r->frame_number), (vec3s){0.0f, 1.0f, 0.0f});
 
+		struct Global_Uniform_Data uniforms = {
+			.view_mat = view,
+			.proj_mat = proj,
+			.view_proj_mat = glms_mat4_mul(proj, view)
+		};
+
 		clear_values[0] = (VkClearValue) {
 			.color.float32 = {0.26f * flash, 0.16f * flash, 0.45f * flash, 1.0f}
 		};
 
+		/* update GPU data */
+		vk_update_buffer(vk, vk->global_uniform_buffer, &uniforms, 0, sizeof(uniforms));
+		
+		/* record commands */
 		vkCmdBeginRenderPass(cmdbuf, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
 
         VkBuffer buffers[] = { vk->tri_mesh.vert_buf.handle };
@@ -1104,6 +1198,8 @@ static void render(struct Render_State *r, struct VK *vk)
 		else {
 			vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->flat_pipeline);
 		}
+		
+		vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->empty_pipeline_layout, 0, 1, &vk->global_desc, 0, NULL);
 
 		vkCmdPushConstants(cmdbuf, vk->empty_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
         vkCmdDrawIndexed(cmdbuf, vk->tri_mesh.index_count, 1, 0, 0, 0);
