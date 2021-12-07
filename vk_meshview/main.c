@@ -938,83 +938,6 @@ static void vk_init(struct VK *vk)
 
         vk->mem_top = 0;
     }
-
-    /* app-specific init
-     * TODO: move this out */
-    {
-        // Triangle data
-        const size_t vert_buffer_stride = 8;
-        const size_t vert_buffer_stride_bytes = vert_buffer_stride * sizeof(float);
-
-#if 0
-        const float vert_buffer_data[] = {
-             0.0f, -0.5f, 0.0f,     1.0f, 0.0f, 0.0f,    0.0f, 0.0f,
-             0.5f,  0.5f, 0.0f,     0.0f, 1.0f, 0.0f,    0.0f, 0.0f,
-            -0.5f,  0.5f, 0.0f,     0.0f, 0.0f, 1.0f,    0.0f, 0.0f
-        };
-
-        const uint16_t index_buffer_data[] = {
-            0, 1, 2
-        };
-
-        struct Mesh mesh = {
-            .vert_count = countof(vert_buffer_data),
-            .index_count = countof(index_buffer_data)
-        };
-
-        const int vert_buffer_size = sizeof(vert_buffer_data);
-        const int index_buffer_size = sizeof(index_buffer_data);
-#else
-        uint32_t file_size;
-        char *mesh_data = file_load_binary("data/suzanne.bin", &file_size);
-
-        char *p = mesh_data;
-        uint32_t vert_count = *(uint32_t *)p;
-        p += sizeof(vert_count);
-
-        uint32_t index_count = *(uint32_t *)p;
-        p += sizeof(index_count);
-
-        const size_t vert_buffer_size = vert_count * vert_buffer_stride_bytes;
-        const size_t index_buffer_size = index_count * sizeof(uint16_t);
-
-        const float *vert_buffer_data = (float *)p;
-        p += vert_buffer_size;
-
-        const uint16_t *index_buffer_data = (uint16_t *)p;
-
-        struct Mesh mesh = {
-            .vert_count = vert_count,
-            .index_count = index_count
-        };
-#endif
-
-        // Vertex buffer
-        {
-            struct VK_Buffer buf = vk_create_and_alloc_buffer(vk, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vert_buffer_size);
-            
-            void *mapped_mem;
-            vkMapMemory(vk->device, vk->mem, buf.offset, buf.size, 0, &mapped_mem);
-            memcpy(mapped_mem, vert_buffer_data, vert_buffer_size);
-            vkUnmapMemory(vk->device, vk->mem);
-
-            mesh.vert_buf = buf;
-        }
-
-        // Index buffer
-        {
-            struct VK_Buffer buf = vk_create_and_alloc_buffer(vk, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, index_buffer_size);
-
-            void *mapped_mem;
-            vkMapMemory(vk->device, vk->mem, buf.offset, buf.size, 0, &mapped_mem);
-            memcpy(mapped_mem, index_buffer_data, index_buffer_size);
-            vkUnmapMemory(vk->device, vk->mem);
-
-            mesh.index_buf = buf;
-        }
-
-        vk->tri_mesh = mesh;
-    }
 }
 
 static void vk_destroy(struct VK *vk)
@@ -1034,6 +957,82 @@ static void scene_init(struct Render_State *r, struct VK *vk)
 {
 	vk->flat_pipeline = vk_create_pipeline_and_shaders(vk, "shaders/flat_vert.spv", "shaders/flat_frag.spv", vk->empty_pipeline_layout);
 	vk->lit_pipeline = vk_create_pipeline_and_shaders(vk, "shaders/lit_vert.spv", "shaders/lit_frag.spv", vk->empty_pipeline_layout);
+
+
+    /* Geometry init */
+
+    // Triangle data
+    const size_t vert_buffer_stride = 8;
+    const size_t vert_buffer_stride_bytes = vert_buffer_stride * sizeof(float);
+
+#if 0
+    const float vert_buffer_data[] = {
+         0.0f, -0.5f, 0.0f,     1.0f, 0.0f, 0.0f,    0.0f, 0.0f,
+         0.5f,  0.5f, 0.0f,     0.0f, 1.0f, 0.0f,    0.0f, 0.0f,
+        -0.5f,  0.5f, 0.0f,     0.0f, 0.0f, 1.0f,    0.0f, 0.0f
+    };
+
+    const uint16_t index_buffer_data[] = {
+        0, 1, 2
+    };
+
+    struct Mesh mesh = {
+        .vert_count = countof(vert_buffer_data),
+        .index_count = countof(index_buffer_data)
+    };
+
+    const int vert_buffer_size = sizeof(vert_buffer_data);
+    const int index_buffer_size = sizeof(index_buffer_data);
+#else
+    uint32_t file_size;
+    char *mesh_data = file_load_binary("data/suzanne.bin", &file_size);
+
+    char *p = mesh_data;
+    uint32_t vert_count = *(uint32_t *)p;
+    p += sizeof(vert_count);
+
+    uint32_t index_count = *(uint32_t *)p;
+    p += sizeof(index_count);
+
+    const size_t vert_buffer_size = vert_count * vert_buffer_stride_bytes;
+    const size_t index_buffer_size = index_count * sizeof(uint16_t);
+
+    const float *vert_buffer_data = (float *)p;
+    p += vert_buffer_size;
+
+    const uint16_t *index_buffer_data = (uint16_t *)p;
+
+    struct Mesh mesh = {
+        .vert_count = vert_count,
+        .index_count = index_count
+    };
+#endif
+
+    // Vertex buffer
+    {
+        struct VK_Buffer buf = vk_create_and_alloc_buffer(vk, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vert_buffer_size);
+
+        void *mapped_mem;
+        vkMapMemory(vk->device, vk->mem, buf.offset, buf.size, 0, &mapped_mem);
+        memcpy(mapped_mem, vert_buffer_data, vert_buffer_size);
+        vkUnmapMemory(vk->device, vk->mem);
+
+        mesh.vert_buf = buf;
+    }
+
+    // Index buffer
+    {
+        struct VK_Buffer buf = vk_create_and_alloc_buffer(vk, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, index_buffer_size);
+
+        void *mapped_mem;
+        vkMapMemory(vk->device, vk->mem, buf.offset, buf.size, 0, &mapped_mem);
+        memcpy(mapped_mem, index_buffer_data, index_buffer_size);
+        vkUnmapMemory(vk->device, vk->mem);
+
+        mesh.index_buf = buf;
+    }
+
+    vk->tri_mesh = mesh;
 }
 
 static void render(struct Render_State *r, struct VK *vk)
