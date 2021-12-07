@@ -4,6 +4,8 @@ Currently mostly Vulkan, may add some OpenGL scenes as well.
 
 Check out the simple Blender exporter under vk_meshview/tools!
 
+**DISCLAIMER:** This is not meant to be an example on how to correctly use Vulkan. These examples are being made as I learn the Vulkan API, so they may contain mistakes.
+
 ## Sample Programs
 * vk_hello: Just a simple Hello World for Vulkan
 * vk_meshview: Simply displaying arbitrary meshes exported from Blender. Includes Blender exporter and sample data.
