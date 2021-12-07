@@ -1172,6 +1172,7 @@ static void render(struct Render_State *r, struct VK *vk)
 
 	/* SYNC: Here we pass in a semaphore that will be signalled once we have an
 	 * image available to draw into */
+	// TODO BUG: This times out and crashes when the window is minimized or covered
 	uint32_t swapchain_index;
     VK_CHECK(vkAcquireNextImageKHR(vk->device, vk->swapchain, TIMEOUT, vk->present_semaphore, NULL, &swapchain_index));
 
