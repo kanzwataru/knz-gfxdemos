@@ -1336,6 +1336,13 @@ int main(int argc, char **argv)
 			}
 		}
 
+        // NOTE: Stop doing anything if minimized, because acquiring next image in swapchain will fail.
+        uint32_t window_flags = SDL_GetWindowFlags(s_window);
+        while(window_flags & SDL_WINDOW_MINIMIZED) {
+            SDL_WaitEvent(NULL);
+            window_flags = SDL_GetWindowFlags(s_window);
+        }
+
 		render(r, vk);
 
 		++s_render_state.frame_number;
