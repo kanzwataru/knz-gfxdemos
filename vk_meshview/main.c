@@ -933,7 +933,8 @@ static void vk_init(struct VK *vk)
         };
 
         VK_CHECK(vkCreateDescriptorSetLayout(vk->device, &desc_info, NULL, &vk->global_desc_layout));
-        
+        vk_push_deletable(vk, vkDestroyDescriptorSetLayout, vk->global_desc_layout);
+
         /* descriptor pool */
         VkDescriptorPoolSize sizes[] = {
             { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10 }
@@ -948,6 +949,7 @@ static void vk_init(struct VK *vk)
         };
         
         VK_CHECK(vkCreateDescriptorPool(vk->device, &pool_info, NULL, &vk->desc_pool));
+        vk_push_deletable(vk, vkDestroyDescriptorPool, vk->desc_pool);
 
         /* descriptors */
         // NOTE: The actual buffer is created way after in scene_init, so this just allocates the descriptor for use later
