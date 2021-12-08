@@ -530,7 +530,6 @@ static void vk_init(struct VK *vk)
         /* Choose a memory type that is host visible */
         printf("Searching HOST_VISIBLE | HOST_COHERENT | HOST_CACHED, memory heap\n");
         bool found = false;
-#if 1
         for(uint32_t i = 0; i < mem_properties.memoryTypeCount; ++i) {
             if(mem_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT &&
                mem_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT &&
@@ -541,7 +540,6 @@ static void vk_init(struct VK *vk)
                 break;
             }
         }
-#endif
 
         if(!found) {
             printf("Falling back to un-cached HOST_VISIBLE | HOST_COHERENT memory heap\n");
