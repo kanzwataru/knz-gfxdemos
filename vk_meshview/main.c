@@ -24,6 +24,8 @@
 #define GPU_SCRATCH_POOL_SIZE (64 * 1024 * 1024)
 #define GPU_VRAM_POOL_SIZE    (128 * 1024 * 1024)
 
+#define WITH_LOGGING 1
+
 /* Deletion Queue Notes:
  * 
  * So far, all of Vulkan's destroy calls have the same sort of signature,
@@ -160,6 +162,12 @@ static SDL_Window *s_window;
 #define CLAMP(v_, min_, max_) (MAX(min_, MIN(v_, max_)))
 */
 
+#if WITH_LOGGING
+	#define LOG(...) printf(__VA_ARGS__)
+#else
+	#define LOG(...)
+#endif
+
 #define VK_CHECK(x_) \
 	do {\
 		VkResult err = x_;\
@@ -200,6 +208,8 @@ static char *file_load_binary(const char *path, uint32_t *size)
 	char *buf = malloc(*size);
 	fread(buf, 1, *size, fp);
 
+	LOG("Loaded file from: %s\n", path);
+
 	return buf;
 }
 
@@ -219,6 +229,9 @@ static VkShaderModule vk_create_shader_module_from_file(struct VK *vk, const cha
 	VK_CHECK(vkCreateShaderModule(vk->device, &create_info, NULL, &module));
 
 	free(code); // TODO: Must check if it's OK to free after calling above function
+
+	LOG("Created shader from: %s\n", path);
+	
 	return module;
 }
 
@@ -245,6 +258,8 @@ static struct VK_Mem_Arena vk_alloc_mem_arena(struct VK *vk, int memory_type_idx
     VK_CHECK(vkAllocateMemory(vk->device, &alloc_info, NULL, &allocation));
     vk_push_deletable(vk, vkFreeMemory, allocation);
 
+    LOG("Created GPU memory arena with size: %.1fKB from memory type: %d\n", (float)capacity / 1024.0f, memory_type_idx);
+
     return (struct VK_Mem_Arena) {
         .allocation = allocation,
         .capacity = capacity,
@@ -258,7 +273,9 @@ static uint64_t vk_mem_arena_push(struct VK *vk, struct VK_Mem_Arena *arena, VkM
     const uint64_t buffer_address = arena->top;
     arena->top += mem_req.size;
 
-    return buffer_address;
+    LOG("Push to arena %p size: %.3fKB (%.3f%% usage)\n", arena, (float)mem_req.size / 1024.0f, 100 * ((float)arena->top / (float)arena->capacity));
+
+    return buffer_address;    
 }
 
 // TODO: Expose more options as parameters
@@ -411,6 +428,8 @@ static VkPipeline vk_create_pipeline(struct VK *vk,
     VK_CHECK(vkCreateGraphicsPipelines(vk->device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &pipeline));
     vk_push_deletable(vk, vkDestroyPipeline, pipeline);
 
+    LOG("Created pipeline\n");
+
     return pipeline;
 }
 
@@ -474,6 +493,8 @@ static struct VK_Buffer vk_create_buffer_ex(struct VK *vk, struct VK_Mem_Arena *
         .offset = buffer_addr,
         .size = mem_requirements.size
     };
+    
+    LOG("Created buffer\n");
 }
 
 static struct VK_Buffer vk_create_buffer(struct VK *vk, VkBufferUsageFlagBits usage, size_t size)
@@ -548,6 +569,8 @@ static struct VK_Buffer vk_create_and_upload_buffer(struct VK *vk, VkBufferUsage
 	/* free staging buffer */
 	vkDestroyBuffer(vk->device, staging_buffer.handle, NULL);
 	vk->scratch_mem.top -= size;
+
+    LOG("Created buffer and uploaded to device local memory\n");
 	
 	return buffer;
 }
@@ -696,7 +719,7 @@ static void vk_init(struct VK *vk)
         }
 
         CHECK(found, "Couldn't find device local memory");
-        printf("-> Chose type %d (heap %d)\n", vk->mem_gpu_local_idx, mem_properties.memoryTypes[vk->mem_gpu_local_idx].heapIndex);
+        printf("-> Chose type %d (heap %d)\n\n", vk->mem_gpu_local_idx, mem_properties.memoryTypes[vk->mem_gpu_local_idx].heapIndex);
     }
 
 	/* surface */
@@ -1167,6 +1190,8 @@ static void vk_init(struct VK *vk)
         vk_push_deletable(vk, vkDestroySemaphore, vk->present_semaphore);
         vk_push_deletable(vk, vkDestroySemaphore, vk->render_semaphore);
     }
+    
+    LOG("vk_init done\n");
 }
 
 static void vk_destroy(struct VK *vk)
@@ -1180,6 +1205,8 @@ static void vk_destroy(struct VK *vk)
 	vkDestroySurfaceKHR(vk->instance, vk->surface, NULL);
 	vkDestroyDevice(vk->device, NULL);
 	vkDestroyInstance(vk->instance, NULL);
+	
+	LOG("vk_destroy done\n");
 }
 
 static void vk_update_buffer(struct VK *vk, struct VK_Buffer buf, void *data, size_t offset, size_t size)
@@ -1220,6 +1247,8 @@ static struct Mesh upload_mesh_from_raw_data(struct VK *vk, const char *mesh_dat
     mesh.vert_buf = vk_create_and_upload_buffer(vk, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vert_buffer_data, vert_buffer_size);
     mesh.index_buf = vk_create_and_upload_buffer(vk, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, index_buffer_data, index_buffer_size);
 
+    LOG("Uploaded mesh from raw data\n");
+    
     return mesh;
 }
 
@@ -1265,6 +1294,8 @@ static void scene_init(struct Render_State *r, struct VK *vk)
         
         vkUpdateDescriptorSets(vk->device, 1, &set_write, 0, NULL);
     }
+    
+    LOG("Scene init done\n");
 }
 
 static void render(struct Render_State *r, struct VK *vk)
