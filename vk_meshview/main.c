@@ -20,7 +20,9 @@
 #define WIDTH 1280
 #define HEIGHT 720
 #define TIMEOUT 1000000000
-#define VRAM_POOL_SIZE (64 * 1024 * 1024)
+
+#define GPU_SCRATCH_POOL_SIZE (64 * 1024 * 1024)
+#define GPU_VRAM_POOL_SIZE    (128 * 1024 * 1024)
 
 /* Deletion Queue Notes:
  * 
@@ -47,6 +49,12 @@ struct VK_Buffer {
     VkBuffer handle;
     size_t offset;
     size_t size;
+};
+
+struct VK_Mem_Arena {
+    VkDeviceMemory allocation;
+    size_t top;
+    size_t capacity;
 };
 
 struct Mesh {
@@ -92,9 +100,10 @@ struct VK {
 
 	/* Memory */
 	int mem_host_coherent_idx;
-	int mem_gpu_fast_idx;
-    VkDeviceMemory mem;
-    size_t mem_top;
+	int mem_gpu_local_idx;
+
+	struct VK_Mem_Arena scratch_mem;
+	struct VK_Mem_Arena gpu_mem;
 
 	/* Descriptor */
 	VkDescriptorPool desc_pool;
@@ -219,6 +228,35 @@ static void vk_push_deletable(struct VK *vk, void (*func)(), void *handle)
 		.func = func,
 		.handle = handle
 	};
+}
+
+static struct VK_Mem_Arena vk_alloc_mem_arena(struct VK *vk, int memory_type_idx, size_t capacity)
+{
+    VkMemoryAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = capacity,
+        .memoryTypeIndex = memory_type_idx,
+    };
+
+    VkDeviceMemory allocation;
+    
+    VK_CHECK(vkAllocateMemory(vk->device, &alloc_info, NULL, &allocation));
+    vk_push_deletable(vk, vkFreeMemory, allocation);
+
+    return (struct VK_Mem_Arena) {
+        .allocation = allocation,
+        .capacity = capacity,
+        .top = 0
+    };
+}
+
+static uint64_t vk_mem_arena_push(struct VK *vk, struct VK_Mem_Arena *arena, VkMemoryRequirements mem_req)
+{
+    arena->top = align_address(arena->top, mem_req.alignment);
+    const uint64_t buffer_address = arena->top;
+    arena->top += mem_req.size;
+
+    return buffer_address;
 }
 
 // TODO: Expose more options as parameters
@@ -426,11 +464,8 @@ static struct VK_Buffer vk_create_and_alloc_buffer(struct VK *vk, VkBufferUsageF
     VkMemoryRequirements mem_requirements;
     vkGetBufferMemoryRequirements(vk->device, buffer, &mem_requirements);
 
-    vk->mem_top = align_address(vk->mem_top, mem_requirements.alignment);
-    const size_t buffer_addr = vk->mem_top;
-
-    vkBindBufferMemory(vk->device, buffer, vk->mem, vk->mem_top);
-    vk->mem_top += mem_requirements.size;
+    const size_t buffer_addr = vk_mem_arena_push(vk, &vk->scratch_mem, mem_requirements);
+    vkBindBufferMemory(vk->device, buffer, vk->scratch_mem.allocation, buffer_addr);
 
     return (struct VK_Buffer) {
         .handle = buffer,
@@ -565,7 +600,7 @@ static void vk_init(struct VK *vk)
             if(mem_properties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
                !(mem_properties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
             ) {
-                vk->mem_gpu_fast_idx = i;
+                vk->mem_gpu_local_idx = i;
                 found = true;
                 break;
             }
@@ -575,7 +610,7 @@ static void vk_init(struct VK *vk)
             printf("Falling back to any DEVICE_LOCAL, even if HOST_VISIBLE (is this an integrated card?)\n");
             for(uint32_t i = 0; i < mem_properties.memoryTypeCount; ++i) {
                 if(mem_properties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-                    vk->mem_gpu_fast_idx = i;
+                    vk->mem_gpu_local_idx = i;
                     found = true;
                     break;
                 }
@@ -583,9 +618,9 @@ static void vk_init(struct VK *vk)
         }
 
         CHECK(found, "Couldn't find device local memory");
-        printf("-> Chose type %d (heap %d)\n", vk->mem_gpu_fast_idx, mem_properties.memoryTypes[vk->mem_gpu_fast_idx].heapIndex);
+        printf("-> Chose type %d (heap %d)\n", vk->mem_gpu_local_idx, mem_properties.memoryTypes[vk->mem_gpu_local_idx].heapIndex);
     }
-	
+
 	/* surface */
 	{
 		// TODO: Make sure we are allowed to have this before VkDevice creation
@@ -676,6 +711,12 @@ static void vk_init(struct VK *vk)
 		vkGetDeviceQueue(vk->device, vk->queue_graphics_idx, 0, &vk->queue_graphics);
 	}
 
+    /* memory allocation */
+    {
+        vk->scratch_mem = vk_alloc_mem_arena(vk, vk->mem_host_coherent_idx, GPU_SCRATCH_POOL_SIZE);
+        vk->gpu_mem = vk_alloc_mem_arena(vk, vk->mem_gpu_local_idx, GPU_VRAM_POOL_SIZE);
+    }
+
 	/* swap chain */
 	{
 		/* query */
@@ -753,17 +794,11 @@ static void vk_init(struct VK *vk)
         VkMemoryAllocateInfo alloc_info = {
             .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
             .allocationSize = depth_image_mem_requirements.size,
-            .memoryTypeIndex = vk->mem_gpu_fast_idx
+            .memoryTypeIndex = vk->mem_gpu_local_idx
         };
 
-        // NOTE: Allocating GPU memory here, currently only for depth buffer.
-        //       Once we have more things to put here (and we get to having staging buffers),
-        //       this will also need to be globally accessible with bookkeeping.
-        VkDeviceMemory fast_mem;
-        VK_CHECK(vkAllocateMemory(vk->device, &alloc_info, NULL, &fast_mem));
-        vk_push_deletable(vk, vkFreeMemory, fast_mem);
-
-        vkBindImageMemory(vk->device, vk->depth_image, fast_mem, 0);
+        const uint64_t buffer_address = vk_mem_arena_push(vk, &vk->gpu_mem, depth_image_mem_requirements);
+        vkBindImageMemory(vk->device, vk->depth_image, vk->gpu_mem.allocation, buffer_address);
 
 		VkImageViewCreateInfo depth_image_view_create_info = {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -1028,21 +1063,6 @@ static void vk_init(struct VK *vk)
         vk_push_deletable(vk, vkDestroySemaphore, vk->present_semaphore);
         vk_push_deletable(vk, vkDestroySemaphore, vk->render_semaphore);
     }
-    
-    /* memory allocation */
-    {
-        // Allocate scratch memory
-        VkMemoryAllocateInfo alloc_info = {
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .allocationSize = VRAM_POOL_SIZE,
-            .memoryTypeIndex = vk->mem_host_coherent_idx,
-        };
-
-        VK_CHECK(vkAllocateMemory(vk->device, &alloc_info, NULL, &vk->mem));
-        vk_push_deletable(vk, vkFreeMemory, vk->mem);
-
-        vk->mem_top = 0;
-    }
 }
 
 static void vk_destroy(struct VK *vk)
@@ -1063,9 +1083,9 @@ static void vk_update_buffer(struct VK *vk, struct VK_Buffer buf, void *data, si
     assert(offset + size <= buf.size);
     
     void *mapped_mem;
-    vkMapMemory(vk->device, vk->mem, buf.offset, buf.size, 0, &mapped_mem);
+    vkMapMemory(vk->device, vk->scratch_mem.allocation, buf.offset, buf.size, 0, &mapped_mem);
     memcpy((char *)mapped_mem + offset, data, size);
-    vkUnmapMemory(vk->device, vk->mem);	
+    vkUnmapMemory(vk->device, vk->scratch_mem.allocation);
 }
 
 static struct Mesh upload_mesh_from_raw_data(struct VK *vk, const char *mesh_data)
@@ -1098,9 +1118,9 @@ static struct Mesh upload_mesh_from_raw_data(struct VK *vk, const char *mesh_dat
         struct VK_Buffer buf = vk_create_and_alloc_buffer(vk, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vert_buffer_size);
 
         void *mapped_mem;
-        vkMapMemory(vk->device, vk->mem, buf.offset, buf.size, 0, &mapped_mem);
+        vkMapMemory(vk->device, vk->scratch_mem.allocation, buf.offset, buf.size, 0, &mapped_mem);
         memcpy(mapped_mem, vert_buffer_data, vert_buffer_size);
-        vkUnmapMemory(vk->device, vk->mem);
+        vkUnmapMemory(vk->device, vk->scratch_mem.allocation);
 
         mesh.vert_buf = buf;
     }
@@ -1110,9 +1130,9 @@ static struct Mesh upload_mesh_from_raw_data(struct VK *vk, const char *mesh_dat
         struct VK_Buffer buf = vk_create_and_alloc_buffer(vk, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, index_buffer_size);
 
         void *mapped_mem;
-        vkMapMemory(vk->device, vk->mem, buf.offset, buf.size, 0, &mapped_mem);
+        vkMapMemory(vk->device, vk->scratch_mem.allocation, buf.offset, buf.size, 0, &mapped_mem);
         memcpy(mapped_mem, index_buffer_data, index_buffer_size);
-        vkUnmapMemory(vk->device, vk->mem);
+        vkUnmapMemory(vk->device, vk->scratch_mem.allocation);
 
         mesh.index_buf = buf;
     }
