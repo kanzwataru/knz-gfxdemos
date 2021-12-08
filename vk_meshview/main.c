@@ -88,6 +88,7 @@ struct VK {
 	/* Queues and Commands */
 	VkQueue queue_graphics;
 
+	VkCommandPool command_pool_upload;
 	VkCommandPool command_pool_graphics;
 	VkCommandBuffer command_buffer_graphics;
 
@@ -97,12 +98,13 @@ struct VK {
 	VkSemaphore present_semaphore;
 	VkSemaphore render_semaphore;
 	VkFence render_fence;
+	VkFence upload_fence;
 
 	/* Memory */
 	int mem_host_coherent_idx;
 	int mem_gpu_local_idx;
 
-	struct VK_Mem_Arena scratch_mem;
+	struct VK_Mem_Arena scratch_mem; // TODO CLEANUP: Rename this to arena_scratch_mem
 	struct VK_Mem_Arena gpu_mem;
 
 	/* Descriptor */
@@ -446,7 +448,8 @@ static VkPipeline vk_create_pipeline_and_shaders(struct VK *vk,
     return pipeline;
 }
 
-static struct VK_Buffer vk_create_and_alloc_buffer(struct VK *vk, VkBufferUsageFlagBits usage, size_t size)
+// NOTE: The buffer created here is not pushed to the deletion queue
+static struct VK_Buffer vk_create_buffer_ex(struct VK *vk, struct VK_Mem_Arena *arena, VkBufferUsageFlagBits usage, size_t size)
 {
     VkBufferCreateInfo buffer_info = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -459,19 +462,93 @@ static struct VK_Buffer vk_create_and_alloc_buffer(struct VK *vk, VkBufferUsageF
     VkBuffer buffer;
 
     VK_CHECK(vkCreateBuffer(vk->device, &buffer_info, NULL, &buffer));
-    vk_push_deletable(vk, vkDestroyBuffer, buffer);
 
     VkMemoryRequirements mem_requirements;
     vkGetBufferMemoryRequirements(vk->device, buffer, &mem_requirements);
 
-    const size_t buffer_addr = vk_mem_arena_push(vk, &vk->scratch_mem, mem_requirements);
-    vkBindBufferMemory(vk->device, buffer, vk->scratch_mem.allocation, buffer_addr);
+    const size_t buffer_addr = vk_mem_arena_push(vk, arena, mem_requirements);
+    vkBindBufferMemory(vk->device, buffer, arena->allocation, buffer_addr);
 
     return (struct VK_Buffer) {
         .handle = buffer,
         .offset = buffer_addr,
         .size = mem_requirements.size
     };
+}
+
+static struct VK_Buffer vk_create_buffer(struct VK *vk, VkBufferUsageFlagBits usage, size_t size)
+{
+    struct VK_Buffer buffer = vk_create_buffer_ex(vk, &vk->scratch_mem, usage, size);
+    vk_push_deletable(vk, vkDestroyBuffer, buffer.handle);
+    
+    return buffer;
+}
+
+// TODO PERF: This function creates staging buffers and immediately schedules uploads.
+//            This API needs to be changed to pool together uploads. It's quite bad at the moment!
+static struct VK_Buffer vk_create_and_upload_buffer(struct VK *vk, VkBufferUsageFlagBits usage, const void *data, size_t size)
+{
+	// TODO SYNC: This function may need to wait on the graphics render if we want to use it outside of init.
+	//			  Alternatively or in addition, this can maybe use a different queue. (is that necessary?)
+
+	/* create and fill staging buffer */
+	struct VK_Buffer staging_buffer = vk_create_buffer_ex(vk, &vk->scratch_mem, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, size);
+	
+	void *mapped_mem;
+	vkMapMemory(vk->device, vk->scratch_mem.allocation, staging_buffer.offset, staging_buffer.size, 0, &mapped_mem);
+	memcpy(mapped_mem, data, size);
+	vkUnmapMemory(vk->device, vk->scratch_mem.allocation);
+
+	/* create the real buffer */
+	struct VK_Buffer buffer = vk_create_buffer_ex(vk, &vk->gpu_mem, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, size);
+	vk_push_deletable(vk, vkDestroyBuffer, buffer.handle);	
+	
+	/* dispatch copy to device local memory */
+	VkCommandBufferAllocateInfo cmd_alloc_info = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+		.commandPool = vk->command_pool_upload,
+		.commandBufferCount = 1,
+		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY
+	};
+
+	VkCommandBuffer cmdbuf;
+	VK_CHECK(vkAllocateCommandBuffers(vk->device, &cmd_alloc_info, &cmdbuf));
+
+	VkCommandBufferBeginInfo cmd_begin_info = {	
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		.pInheritanceInfo = NULL,
+		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+	};
+	VK_CHECK(vkBeginCommandBuffer(cmdbuf, &cmd_begin_info));
+
+	// -- Actual transfer commands
+	VkBufferCopy buffer_copy = {
+		.srcOffset = 0,
+		.dstOffset = 0,
+		.size = size
+	};
+	
+	vkCmdCopyBuffer(cmdbuf, staging_buffer.handle, buffer.handle, 1, &buffer_copy);
+	// --
+
+	VK_CHECK(vkEndCommandBuffer(cmdbuf));
+
+	VkSubmitInfo submit_info = {
+		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		.pCommandBuffers = &cmdbuf
+	};	
+
+	VK_CHECK(vkQueueSubmit(vk->queue_graphics, 1, &submit_info, vk->upload_fence));
+
+	vkWaitForFences(vk->device, 1, &vk->upload_fence, true, UINT64_MAX);
+	vkResetFences(vk->device, 1, &vk->upload_fence);	
+	vkResetCommandPool(vk->device, vk->command_pool_upload, 0);
+
+	/* free staging buffer */
+	vkDestroyBuffer(vk->device, staging_buffer.handle, NULL);
+	vk->scratch_mem.top -= size;
+	
+	return buffer;
 }
 
 static void vk_init(struct VK *vk)
@@ -870,15 +947,27 @@ static void vk_init(struct VK *vk)
 
 	/* commands */
 	{
-		VkCommandPoolCreateInfo pool_info = {
+		/* graphics pool */
+		VkCommandPoolCreateInfo graphics_pool_info = {
 			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
 			.queueFamilyIndex = vk->queue_graphics_idx,
 			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT // allow for resetting individual command buffers, but do we need it?
 		};
 
-		VK_CHECK(vkCreateCommandPool(vk->device, &pool_info, NULL, &vk->command_pool_graphics));
+		VK_CHECK(vkCreateCommandPool(vk->device, &graphics_pool_info, NULL, &vk->command_pool_graphics));
 		vk_push_deletable(vk, vkDestroyCommandPool, vk->command_pool_graphics);
 
+		/* upload pool */
+		VkCommandPoolCreateInfo upload_pool_info = {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+			.queueFamilyIndex = vk->queue_graphics_idx,
+			.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT
+		};
+
+		VK_CHECK(vkCreateCommandPool(vk->device, &graphics_pool_info, NULL, &vk->command_pool_upload));
+		vk_push_deletable(vk, vkDestroyCommandPool, vk->command_pool_upload);
+		
+		/* graphics buffer */
 		VkCommandBufferAllocateInfo command_alloc_info = {
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
 			.commandPool = vk->command_pool_graphics,
@@ -1045,14 +1134,28 @@ static void vk_init(struct VK *vk)
 
     /* synchronization */
     {
-        VkFenceCreateInfo fence_info = {
-            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-            .flags = VK_FENCE_CREATE_SIGNALED_BIT,
-        };
+        /* render fence */
+        {
+            VkFenceCreateInfo fence_info = {
+                .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+            };
+    
+            VK_CHECK(vkCreateFence(vk->device, &fence_info, NULL, &vk->render_fence));
+            vk_push_deletable(vk, vkDestroyFence, vk->render_fence);
+        }
 
-        VK_CHECK(vkCreateFence(vk->device, &fence_info, NULL, &vk->render_fence));
-        vk_push_deletable(vk, vkDestroyFence, vk->render_fence);
+        /* upload fence */
+        {
+            VkFenceCreateInfo fence_info = {
+                .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            };
+    
+            VK_CHECK(vkCreateFence(vk->device, &fence_info, NULL, &vk->upload_fence));
+            vk_push_deletable(vk, vkDestroyFence, vk->upload_fence);
+        }
 
+        /* semaphores */        
         VkSemaphoreCreateInfo semaphore_info = {
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
             .flags = 0
@@ -1113,9 +1216,10 @@ static struct Mesh upload_mesh_from_raw_data(struct VK *vk, const char *mesh_dat
         .index_count = index_count
     };
 
+#if 1
     // Vertex buffer
     {
-        struct VK_Buffer buf = vk_create_and_alloc_buffer(vk, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vert_buffer_size);
+        struct VK_Buffer buf = vk_create_buffer(vk, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vert_buffer_size);
 
         void *mapped_mem;
         vkMapMemory(vk->device, vk->scratch_mem.allocation, buf.offset, buf.size, 0, &mapped_mem);
@@ -1124,10 +1228,14 @@ static struct Mesh upload_mesh_from_raw_data(struct VK *vk, const char *mesh_dat
 
         mesh.vert_buf = buf;
     }
-
+#else
+    mesh.vert_buf = vk_create_and_upload_buffer(vk, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vert_buffer_data, vert_buffer_size);
+#endif
+    
+#if 1
     // Index buffer
     {
-        struct VK_Buffer buf = vk_create_and_alloc_buffer(vk, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, index_buffer_size);
+        struct VK_Buffer buf = vk_create_buffer(vk, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, index_buffer_size);
 
         void *mapped_mem;
         vkMapMemory(vk->device, vk->scratch_mem.allocation, buf.offset, buf.size, 0, &mapped_mem);
@@ -1136,6 +1244,9 @@ static struct Mesh upload_mesh_from_raw_data(struct VK *vk, const char *mesh_dat
 
         mesh.index_buf = buf;
     }
+#else
+    mesh.index_buf = vk_create_and_upload_buffer(vk, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, index_buffer_data, index_buffer_size);
+#endif
 
     return mesh;
 }
@@ -1163,7 +1274,7 @@ static void scene_init(struct Render_State *r, struct VK *vk)
 
     /* Uniform buffer init */
     {
-        vk->global_uniform_buffer = vk_create_and_alloc_buffer(vk, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(struct Global_Uniform_Data));
+        vk->global_uniform_buffer = vk_create_buffer(vk, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(struct Global_Uniform_Data));
         
         VkDescriptorBufferInfo desc_buf_info = {
             .buffer = vk->global_uniform_buffer.handle,
