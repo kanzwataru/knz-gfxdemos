@@ -1064,7 +1064,7 @@ static void vk_update_buffer(struct VK *vk, struct VK_Buffer buf, void *data, si
     
     void *mapped_mem;
     vkMapMemory(vk->device, vk->mem, buf.offset, buf.size, 0, &mapped_mem);
-    memcpy(mapped_mem + offset, data, size);
+    memcpy((char *)mapped_mem + offset, data, size);
     vkUnmapMemory(vk->device, vk->mem);	
 }
 
@@ -1198,7 +1198,7 @@ static void render(struct Render_State *r, struct VK *vk)
 		.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
 		.renderPass = vk->render_pass,
 		.renderArea = {
-			.offset = {},
+			.offset = {0},
 			.extent = vk->swapchain_extent
 		},
 		.framebuffer = vk->framebuffers[swapchain_index],
