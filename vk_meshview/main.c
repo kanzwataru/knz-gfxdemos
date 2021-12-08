@@ -59,6 +59,12 @@ struct VK_Mem_Arena {
     size_t capacity;
 };
 
+struct VK_Buffer_Arena {
+    VkBuffer buffer;
+    size_t top;
+    size_t capacity;
+};
+
 struct Mesh {
     struct VK_Buffer vert_buf;
     struct VK_Buffer index_buf;
@@ -278,6 +284,114 @@ static uint64_t vk_mem_arena_push(struct VK *vk, struct VK_Mem_Arena *arena, VkM
     return buffer_address;    
 }
 
+// NOTE: The buffer created here is not pushed to the deletion queue
+static struct VK_Buffer vk_create_buffer_ex(struct VK *vk, struct VK_Mem_Arena *arena, VkBufferUsageFlagBits usage, size_t size)
+{
+    VkBufferCreateInfo buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .flags = 0,
+        .size = size,
+        .usage = usage,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+    };
+
+    VkBuffer buffer;
+
+    VK_CHECK(vkCreateBuffer(vk->device, &buffer_info, NULL, &buffer));
+
+    VkMemoryRequirements mem_requirements;
+    vkGetBufferMemoryRequirements(vk->device, buffer, &mem_requirements);
+
+    const size_t buffer_addr = vk_mem_arena_push(vk, arena, mem_requirements);
+    vkBindBufferMemory(vk->device, buffer, arena->allocation, buffer_addr);
+
+    return (struct VK_Buffer) {
+        .handle = buffer,
+        .offset = buffer_addr,
+        .size = mem_requirements.size
+    };
+    
+    LOG("Created buffer\n");
+}
+
+static struct VK_Buffer vk_create_buffer(struct VK *vk, VkBufferUsageFlagBits usage, size_t size)
+{
+    struct VK_Buffer buffer = vk_create_buffer_ex(vk, &vk->scratch_mem, usage, size);
+    vk_push_deletable(vk, vkDestroyBuffer, buffer.handle);
+    
+    return buffer;
+}
+
+// TODO PERF: This function creates staging buffers and immediately schedules uploads.
+//            This API needs to be changed to pool together uploads. It's quite bad at the moment!
+static struct VK_Buffer vk_create_and_upload_buffer(struct VK *vk, VkBufferUsageFlagBits usage, const void *data, size_t size)
+{
+	// TODO SYNC: This function may need to wait on the graphics render if we want to use it outside of init.
+	//			  Alternatively or in addition, this can maybe use a different queue. (is that necessary?)
+
+	/* create and fill staging buffer */
+	struct VK_Buffer staging_buffer = vk_create_buffer_ex(vk, &vk->scratch_mem, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, size);
+	
+	void *mapped_mem;
+	vkMapMemory(vk->device, vk->scratch_mem.allocation, staging_buffer.offset, staging_buffer.size, 0, &mapped_mem);
+	memcpy(mapped_mem, data, size);
+	vkUnmapMemory(vk->device, vk->scratch_mem.allocation);
+
+	/* create the real buffer */
+	struct VK_Buffer buffer = vk_create_buffer_ex(vk, &vk->gpu_mem, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, size);
+	vk_push_deletable(vk, vkDestroyBuffer, buffer.handle);	
+	
+	/* dispatch copy to device local memory */
+	VkCommandBufferAllocateInfo cmd_alloc_info = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+		.commandPool = vk->command_pool_upload,
+		.commandBufferCount = 1,
+		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY
+	};
+
+	VkCommandBuffer cmdbuf;
+	VK_CHECK(vkAllocateCommandBuffers(vk->device, &cmd_alloc_info, &cmdbuf));
+
+	VkCommandBufferBeginInfo cmd_begin_info = {	
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		.pInheritanceInfo = NULL,
+		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+	};
+	VK_CHECK(vkBeginCommandBuffer(cmdbuf, &cmd_begin_info));
+
+	// -- Actual transfer commands
+	VkBufferCopy buffer_copy = {
+		.srcOffset = 0,
+		.dstOffset = 0,
+		.size = size
+	};
+	
+	vkCmdCopyBuffer(cmdbuf, staging_buffer.handle, buffer.handle, 1, &buffer_copy);
+	// --
+
+	VK_CHECK(vkEndCommandBuffer(cmdbuf));
+
+	VkSubmitInfo submit_info = {
+		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		.pCommandBuffers = &cmdbuf,
+		.commandBufferCount = 1
+	};	
+
+	VK_CHECK(vkQueueSubmit(vk->queue_graphics, 1, &submit_info, vk->upload_fence));
+
+	vkWaitForFences(vk->device, 1, &vk->upload_fence, true, UINT64_MAX);
+	vkResetFences(vk->device, 1, &vk->upload_fence);	
+	vkResetCommandPool(vk->device, vk->command_pool_upload, 0);
+
+	/* free staging buffer */
+	vkDestroyBuffer(vk->device, staging_buffer.handle, NULL);
+	vk->scratch_mem.top -= size;
+
+    LOG("Created buffer and uploaded to device local memory\n");
+	
+	return buffer;
+}
+
 // TODO: Expose more options as parameters
 static VkPipeline vk_create_pipeline(struct VK *vk,
                                      VkPipelineLayout layout,
@@ -465,114 +579,6 @@ static VkPipeline vk_create_pipeline_and_shaders(struct VK *vk,
     vkDestroyShaderModule(vk->device, shader_vert, NULL);
     
     return pipeline;
-}
-
-// NOTE: The buffer created here is not pushed to the deletion queue
-static struct VK_Buffer vk_create_buffer_ex(struct VK *vk, struct VK_Mem_Arena *arena, VkBufferUsageFlagBits usage, size_t size)
-{
-    VkBufferCreateInfo buffer_info = {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .flags = 0,
-        .size = size,
-        .usage = usage,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
-    };
-
-    VkBuffer buffer;
-
-    VK_CHECK(vkCreateBuffer(vk->device, &buffer_info, NULL, &buffer));
-
-    VkMemoryRequirements mem_requirements;
-    vkGetBufferMemoryRequirements(vk->device, buffer, &mem_requirements);
-
-    const size_t buffer_addr = vk_mem_arena_push(vk, arena, mem_requirements);
-    vkBindBufferMemory(vk->device, buffer, arena->allocation, buffer_addr);
-
-    return (struct VK_Buffer) {
-        .handle = buffer,
-        .offset = buffer_addr,
-        .size = mem_requirements.size
-    };
-    
-    LOG("Created buffer\n");
-}
-
-static struct VK_Buffer vk_create_buffer(struct VK *vk, VkBufferUsageFlagBits usage, size_t size)
-{
-    struct VK_Buffer buffer = vk_create_buffer_ex(vk, &vk->scratch_mem, usage, size);
-    vk_push_deletable(vk, vkDestroyBuffer, buffer.handle);
-    
-    return buffer;
-}
-
-// TODO PERF: This function creates staging buffers and immediately schedules uploads.
-//            This API needs to be changed to pool together uploads. It's quite bad at the moment!
-static struct VK_Buffer vk_create_and_upload_buffer(struct VK *vk, VkBufferUsageFlagBits usage, const void *data, size_t size)
-{
-	// TODO SYNC: This function may need to wait on the graphics render if we want to use it outside of init.
-	//			  Alternatively or in addition, this can maybe use a different queue. (is that necessary?)
-
-	/* create and fill staging buffer */
-	struct VK_Buffer staging_buffer = vk_create_buffer_ex(vk, &vk->scratch_mem, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, size);
-	
-	void *mapped_mem;
-	vkMapMemory(vk->device, vk->scratch_mem.allocation, staging_buffer.offset, staging_buffer.size, 0, &mapped_mem);
-	memcpy(mapped_mem, data, size);
-	vkUnmapMemory(vk->device, vk->scratch_mem.allocation);
-
-	/* create the real buffer */
-	struct VK_Buffer buffer = vk_create_buffer_ex(vk, &vk->gpu_mem, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, size);
-	vk_push_deletable(vk, vkDestroyBuffer, buffer.handle);	
-	
-	/* dispatch copy to device local memory */
-	VkCommandBufferAllocateInfo cmd_alloc_info = {
-		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-		.commandPool = vk->command_pool_upload,
-		.commandBufferCount = 1,
-		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY
-	};
-
-	VkCommandBuffer cmdbuf;
-	VK_CHECK(vkAllocateCommandBuffers(vk->device, &cmd_alloc_info, &cmdbuf));
-
-	VkCommandBufferBeginInfo cmd_begin_info = {	
-		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-		.pInheritanceInfo = NULL,
-		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
-	};
-	VK_CHECK(vkBeginCommandBuffer(cmdbuf, &cmd_begin_info));
-
-	// -- Actual transfer commands
-	VkBufferCopy buffer_copy = {
-		.srcOffset = 0,
-		.dstOffset = 0,
-		.size = size
-	};
-	
-	vkCmdCopyBuffer(cmdbuf, staging_buffer.handle, buffer.handle, 1, &buffer_copy);
-	// --
-
-	VK_CHECK(vkEndCommandBuffer(cmdbuf));
-
-	VkSubmitInfo submit_info = {
-		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-		.pCommandBuffers = &cmdbuf,
-		.commandBufferCount = 1
-	};	
-
-	VK_CHECK(vkQueueSubmit(vk->queue_graphics, 1, &submit_info, vk->upload_fence));
-
-	vkWaitForFences(vk->device, 1, &vk->upload_fence, true, UINT64_MAX);
-	vkResetFences(vk->device, 1, &vk->upload_fence);	
-	vkResetCommandPool(vk->device, vk->command_pool_upload, 0);
-
-	/* free staging buffer */
-	vkDestroyBuffer(vk->device, staging_buffer.handle, NULL);
-	vk->scratch_mem.top -= size;
-
-    LOG("Created buffer and uploaded to device local memory\n");
-	
-	return buffer;
 }
 
 static void vk_init(struct VK *vk)
