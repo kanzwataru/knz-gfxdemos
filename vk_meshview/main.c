@@ -23,6 +23,8 @@
 
 #define GPU_SCRATCH_POOL_SIZE (64 * 1024 * 1024)
 #define GPU_VRAM_POOL_SIZE    (128 * 1024 * 1024)
+#define GPU_STAGING_POOL_SIZE (16 * 1024 * 1024) // NOTE: This comes out of GPU_SCRATCH_POOL_SIZE
+_Static_assert(GPU_STAGING_POOL_SIZE <= GPU_SCRATCH_POOL_SIZE, "");
 
 #define WITH_LOGGING 1
 
@@ -60,7 +62,7 @@ struct VK_Mem_Arena {
 };
 
 struct VK_Buffer_Arena {
-    VkBuffer buffer;
+    struct VK_Buffer buffer;
     size_t top;
     size_t capacity;
 };
@@ -115,6 +117,8 @@ struct VK {
 	struct VK_Mem_Arena scratch_mem; // TODO CLEANUP: Rename this to arena_scratch_mem
 	struct VK_Mem_Arena gpu_mem;
 
+	struct VK_Buffer_Arena staging_buffer;
+	
 	/* Descriptor */
 	VkDescriptorPool desc_pool;
 
@@ -281,7 +285,7 @@ static uint64_t vk_mem_arena_push(struct VK *vk, struct VK_Mem_Arena *arena, VkM
 
     LOG("Push to arena %p size: %.3fKB (%.3f%% usage)\n", arena, (float)mem_req.size / 1024.0f, 100 * ((float)arena->top / (float)arena->capacity));
 
-    return buffer_address;    
+    return buffer_address;
 }
 
 // NOTE: The buffer created here is not pushed to the deletion queue
@@ -322,6 +326,32 @@ static struct VK_Buffer vk_create_buffer(struct VK *vk, VkBufferUsageFlagBits us
     return buffer;
 }
 
+static struct VK_Buffer_Arena vk_alloc_buffer_arena(struct VK *vk, struct VK_Mem_Arena *arena, VkBufferUsageFlagBits usage, size_t capacity)
+{
+    struct VK_Buffer buffer = vk_create_buffer_ex(vk, arena, usage, capacity);
+    vk_push_deletable(vk, vkDestroyBuffer, buffer.handle);
+
+    LOG("Created buffer-backed arena with size: %.1fKB\n", (float)capacity / 1024.0f);
+
+    return (struct VK_Buffer_Arena) {
+        .buffer = buffer,
+        .capacity = capacity,
+        .top = 0
+    };
+}
+
+static uint64_t vk_buffer_arena_push(struct VK *vk, struct VK_Buffer_Arena *arena, VkMemoryRequirements mem_req)
+{
+    // TODO: Maybe deduplicate with vk_mem_arena_push, the logic is exactly the same
+    arena->top = align_address(arena->top, mem_req.alignment);
+    const uint64_t buffer_address = arena->top;
+    arena->top += mem_req.size;
+
+    LOG("Push to buffer arena %p size: %.3fKB (%.3f%% usage)\n", arena, (float)mem_req.size / 1024.0f, 100 * ((float)arena->top / (float)arena->capacity));
+
+    return buffer_address;
+}
+
 // TODO PERF: This function creates staging buffers and immediately schedules uploads.
 //            This API needs to be changed to pool together uploads. It's quite bad at the moment!
 static struct VK_Buffer vk_create_and_upload_buffer(struct VK *vk, VkBufferUsageFlagBits usage, const void *data, size_t size)
@@ -329,17 +359,33 @@ static struct VK_Buffer vk_create_and_upload_buffer(struct VK *vk, VkBufferUsage
 	// TODO SYNC: This function may need to wait on the graphics render if we want to use it outside of init.
 	//			  Alternatively or in addition, this can maybe use a different queue. (is that necessary?)
 
+#define WITH_STAGING_ARENA 1
+	
+	/* create the real buffer */
+	struct VK_Buffer buffer = vk_create_buffer_ex(vk, &vk->gpu_mem, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, size);
+	vk_push_deletable(vk, vkDestroyBuffer, buffer.handle);	
+
+#if WITH_STAGING_ARENA
+	const uint64_t original_staging_buffer_top = vk->staging_buffer.top;
+	
+	VkMemoryRequirements mem_req;
+	vkGetBufferMemoryRequirements(vk->device, buffer.handle, &mem_req);
+	const uint64_t staging_buffer_offset = vk_buffer_arena_push(vk, &vk->staging_buffer, mem_req);
+	
+	// TODO: Couple staging buffer and allocation as well, we shouldn't guess that it's in vk->scratch_mem!!
+	void *mapped_mem;
+	vkMapMemory(vk->device, vk->scratch_mem.allocation, vk->staging_buffer.buffer.offset + staging_buffer_offset, buffer.size, 0, &mapped_mem);
+	memcpy(mapped_mem, data, size);
+	vkUnmapMemory(vk->device, vk->scratch_mem.allocation);
+#else
 	/* create and fill staging buffer */
 	struct VK_Buffer staging_buffer = vk_create_buffer_ex(vk, &vk->scratch_mem, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, size);
-	
+
 	void *mapped_mem;
 	vkMapMemory(vk->device, vk->scratch_mem.allocation, staging_buffer.offset, staging_buffer.size, 0, &mapped_mem);
 	memcpy(mapped_mem, data, size);
 	vkUnmapMemory(vk->device, vk->scratch_mem.allocation);
-
-	/* create the real buffer */
-	struct VK_Buffer buffer = vk_create_buffer_ex(vk, &vk->gpu_mem, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, size);
-	vk_push_deletable(vk, vkDestroyBuffer, buffer.handle);	
+#endif
 	
 	/* dispatch copy to device local memory */
 	VkCommandBufferAllocateInfo cmd_alloc_info = {
@@ -360,13 +406,25 @@ static struct VK_Buffer vk_create_and_upload_buffer(struct VK *vk, VkBufferUsage
 	VK_CHECK(vkBeginCommandBuffer(cmdbuf, &cmd_begin_info));
 
 	// -- Actual transfer commands
+
+#if WITH_STAGING_ARENA
+	VkBufferCopy buffer_copy = {
+		.srcOffset = staging_buffer_offset,
+		.dstOffset = 0,
+		.size = size
+	};
+
+	vkCmdCopyBuffer(cmdbuf, vk->staging_buffer.buffer.handle, buffer.handle, 1, &buffer_copy);
+#else
 	VkBufferCopy buffer_copy = {
 		.srcOffset = 0,
 		.dstOffset = 0,
 		.size = size
 	};
-	
+
 	vkCmdCopyBuffer(cmdbuf, staging_buffer.handle, buffer.handle, 1, &buffer_copy);
+#endif
+	
 	// --
 
 	VK_CHECK(vkEndCommandBuffer(cmdbuf));
@@ -383,10 +441,14 @@ static struct VK_Buffer vk_create_and_upload_buffer(struct VK *vk, VkBufferUsage
 	vkResetFences(vk->device, 1, &vk->upload_fence);	
 	vkResetCommandPool(vk->device, vk->command_pool_upload, 0);
 
+#if WITH_STAGING_ARENA
+	vk->staging_buffer.top = original_staging_buffer_top;
+#else
 	/* free staging buffer */
 	vkDestroyBuffer(vk->device, staging_buffer.handle, NULL);
-	vk->scratch_mem.top -= size;
-
+	vk->scratch_mem.top -= size;    
+#endif
+    
     LOG("Created buffer and uploaded to device local memory\n");
 	
 	return buffer;
@@ -822,6 +884,7 @@ static void vk_init(struct VK *vk)
     {
         vk->scratch_mem = vk_alloc_mem_arena(vk, vk->mem_host_coherent_idx, GPU_SCRATCH_POOL_SIZE);
         vk->gpu_mem = vk_alloc_mem_arena(vk, vk->mem_gpu_local_idx, GPU_VRAM_POOL_SIZE);
+        vk->staging_buffer = vk_alloc_buffer_arena(vk, &vk->scratch_mem, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, GPU_STAGING_POOL_SIZE);
     }
 
 	/* swap chain */
