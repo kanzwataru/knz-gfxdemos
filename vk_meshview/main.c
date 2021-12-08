@@ -535,7 +535,8 @@ static struct VK_Buffer vk_create_and_upload_buffer(struct VK *vk, VkBufferUsage
 
 	VkSubmitInfo submit_info = {
 		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-		.pCommandBuffers = &cmdbuf
+		.pCommandBuffers = &cmdbuf,
+		.commandBufferCount = 1
 	};	
 
 	VK_CHECK(vkQueueSubmit(vk->queue_graphics, 1, &submit_info, vk->upload_fence));
@@ -1216,37 +1217,8 @@ static struct Mesh upload_mesh_from_raw_data(struct VK *vk, const char *mesh_dat
         .index_count = index_count
     };
 
-#if 1
-    // Vertex buffer
-    {
-        struct VK_Buffer buf = vk_create_buffer(vk, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vert_buffer_size);
-
-        void *mapped_mem;
-        vkMapMemory(vk->device, vk->scratch_mem.allocation, buf.offset, buf.size, 0, &mapped_mem);
-        memcpy(mapped_mem, vert_buffer_data, vert_buffer_size);
-        vkUnmapMemory(vk->device, vk->scratch_mem.allocation);
-
-        mesh.vert_buf = buf;
-    }
-#else
     mesh.vert_buf = vk_create_and_upload_buffer(vk, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vert_buffer_data, vert_buffer_size);
-#endif
-    
-#if 1
-    // Index buffer
-    {
-        struct VK_Buffer buf = vk_create_buffer(vk, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, index_buffer_size);
-
-        void *mapped_mem;
-        vkMapMemory(vk->device, vk->scratch_mem.allocation, buf.offset, buf.size, 0, &mapped_mem);
-        memcpy(mapped_mem, index_buffer_data, index_buffer_size);
-        vkUnmapMemory(vk->device, vk->scratch_mem.allocation);
-
-        mesh.index_buf = buf;
-    }
-#else
     mesh.index_buf = vk_create_and_upload_buffer(vk, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, index_buffer_data, index_buffer_size);
-#endif
 
     return mesh;
 }
