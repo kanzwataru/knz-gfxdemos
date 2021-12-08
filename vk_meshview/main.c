@@ -1173,10 +1173,14 @@ static void render(struct Render_State *r, struct VK *vk)
 	VK_CHECK(vkResetFences(vk->device, 1, &vk->render_fence));
 
 	/* SYNC: Here we pass in a semaphore that will be signalled once we have an
-	 * image available to draw into */
-	// TODO BUG: This times out and crashes when the window is minimized or covered
+	 * image available to draw into.
+     *
+     * NOTE: The timeout is set to infinite (UINT64_MAX) because otherwise on Wayland/AMD
+     * the window being completely covered will cause it to not give us a next image.	
+     * This effectively pauses the application until it's visible again.
+	*/
 	uint32_t swapchain_index;
-    VK_CHECK(vkAcquireNextImageKHR(vk->device, vk->swapchain, TIMEOUT, vk->present_semaphore, NULL, &swapchain_index));
+    VK_CHECK(vkAcquireNextImageKHR(vk->device, vk->swapchain, UINT64_MAX, vk->present_semaphore, NULL, &swapchain_index));
 
 	/* commands */
 	VK_CHECK(vkResetCommandBuffer(vk->command_buffer_graphics, 0));
