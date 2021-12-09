@@ -28,6 +28,8 @@ static_assert(GPU_STAGING_POOL_SIZE <= GPU_SCRATCH_POOL_SIZE, "");
 
 #define WITH_LOGGING 1
 
+#define WITH_GROUPED_STAGING_TRANSFER 1
+
 /* Deletion Queue Notes:
  * 
  * So far, all of Vulkan's destroy calls have the same sort of signature,
@@ -65,6 +67,15 @@ struct VK_Buffer_Arena {
     struct VK_Buffer buffer;
     size_t top;
     size_t capacity;
+};
+
+struct VK_Staging_Queue {
+    struct {
+        uint64_t offset_in_staging_buffer;
+        uint64_t size;
+        VkBuffer destination_buffer;
+    } entries[512];
+    uint32_t entries_top;
 };
 
 struct Mesh {
@@ -118,7 +129,8 @@ struct VK {
 	struct VK_Mem_Arena gpu_mem;
 
 	struct VK_Buffer_Arena staging_buffer;
-	
+    struct VK_Staging_Queue staging_queue;
+
 	/* Descriptor */
 	VkDescriptorPool desc_pool;
 
@@ -352,22 +364,82 @@ static uint64_t vk_buffer_arena_push(struct VK *vk, struct VK_Buffer_Arena *aren
     return buffer_address;
 }
 
-// TODO PERF: This function creates staging buffers and immediately schedules uploads.
-//            This API needs to be changed to pool together uploads. It's quite bad at the moment!
+#if WITH_GROUPED_STAGING_TRANSFER
+static void vk_staging_queue_flush(struct VK *vk)
+{
+    // TODO SYNC: This function may need to wait on the graphics render if we want to use it outside of init.
+    //			  Alternatively or in addition, this can maybe use a different queue. (is that necessary?)
+
+    /* Allocate command buffer and begin command recording */
+    VkCommandBufferAllocateInfo cmd_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = vk->command_pool_upload,
+        .commandBufferCount = 1,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY
+    };
+
+    VkCommandBuffer cmdbuf;
+    VK_CHECK(vkAllocateCommandBuffers(vk->device, &cmd_alloc_info, &cmdbuf));
+
+    VkCommandBufferBeginInfo cmd_begin_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .pInheritanceInfo = NULL,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+    };
+    VK_CHECK(vkBeginCommandBuffer(cmdbuf, &cmd_begin_info));
+
+    /* Record commands for every staged entry */
+    for(uint32_t i = 0; i < vk->staging_queue.entries_top; ++i) {
+        struct VkBufferCopy buffer_copy = {
+            .srcOffset = vk->staging_queue.entries[i].offset_in_staging_buffer,
+            .dstOffset = 0,
+            .size = vk->staging_queue.entries[i].size
+        };
+
+
+        vkCmdCopyBuffer(cmdbuf, vk->staging_buffer.buffer.handle, vk->staging_queue.entries[i].destination_buffer, 1, &buffer_copy);
+    }
+
+    VK_CHECK(vkEndCommandBuffer(cmdbuf));
+
+    /* Submit copy commands */
+    VkSubmitInfo submit_info = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pCommandBuffers = &cmdbuf,
+        .commandBufferCount = 1
+    };
+
+    VK_CHECK(vkQueueSubmit(vk->queue_graphics, 1, &submit_info, vk->upload_fence));
+
+    vkWaitForFences(vk->device, 1, &vk->upload_fence, true, UINT64_MAX);
+    vkResetFences(vk->device, 1, &vk->upload_fence);
+    vkResetCommandPool(vk->device, vk->command_pool_upload, 0);
+
+    vk->staging_buffer.top = 0;
+    vk->staging_queue.entries_top = 0;
+
+    LOG("Finished all pending staging buffer uploads\n");
+}
+#else
+static void vk_staging_queue_flush(struct VK *vk) {}
+#endif
+
+// NOTE: With WITH_GROUPED_STAGING_TRANSFER on, the buffer returned is not usable until vk_staging_queue_flush is called.
 static struct VK_Buffer vk_create_and_upload_buffer(struct VK *vk, VkBufferUsageFlagBits usage, const void *data, size_t size)
 {
-	// TODO SYNC: This function may need to wait on the graphics render if we want to use it outside of init.
-	//			  Alternatively or in addition, this can maybe use a different queue. (is that necessary?)
+    /* flush the staging queue if we can't fit any more */
+    const bool staging_buffer_full = size > vk->staging_buffer.capacity - vk->staging_buffer.top;
+    const bool staging_queue_full = vk->staging_queue.entries_top == countof(vk->staging_queue.entries);
+    if(staging_buffer_full || staging_queue_full) {
+        vk_staging_queue_flush(vk);
+    }
 
-#define WITH_STAGING_ARENA 1
-	
+    assert(size < vk->staging_buffer.capacity - vk->staging_buffer.top);
+
 	/* create the real buffer */
 	struct VK_Buffer buffer = vk_create_buffer_ex(vk, &vk->gpu_mem, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, size);
 	vk_push_deletable(vk, vkDestroyBuffer, buffer.handle);	
 
-#if WITH_STAGING_ARENA
-	const uint64_t original_staging_buffer_top = vk->staging_buffer.top;
-	
 	VkMemoryRequirements mem_req;
 	vkGetBufferMemoryRequirements(vk->device, buffer.handle, &mem_req);
 	const uint64_t staging_buffer_offset = vk_buffer_arena_push(vk, &vk->staging_buffer, mem_req);
@@ -377,16 +449,16 @@ static struct VK_Buffer vk_create_and_upload_buffer(struct VK *vk, VkBufferUsage
 	vkMapMemory(vk->device, vk->scratch_mem.allocation, vk->staging_buffer.buffer.offset + staging_buffer_offset, buffer.size, 0, &mapped_mem);
 	memcpy(mapped_mem, data, size);
 	vkUnmapMemory(vk->device, vk->scratch_mem.allocation);
-#else
-	/* create and fill staging buffer */
-	struct VK_Buffer staging_buffer = vk_create_buffer_ex(vk, &vk->scratch_mem, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, size);
-
-	void *mapped_mem;
-	vkMapMemory(vk->device, vk->scratch_mem.allocation, staging_buffer.offset, staging_buffer.size, 0, &mapped_mem);
-	memcpy(mapped_mem, data, size);
-	vkUnmapMemory(vk->device, vk->scratch_mem.allocation);
-#endif
 	
+#if WITH_GROUPED_STAGING_TRANSFER
+    vk->staging_queue.entries[vk->staging_queue.entries_top].destination_buffer = buffer.handle;
+    vk->staging_queue.entries[vk->staging_queue.entries_top].size = buffer.size;
+    vk->staging_queue.entries[vk->staging_queue.entries_top].offset_in_staging_buffer = staging_buffer_offset;
+
+    vk->staging_queue.entries_top++;
+
+    LOG("Created buffer, uploaded to staging buffer. Queued staging transfer for later.\n");
+#else
 	/* dispatch copy to device local memory */
 	VkCommandBufferAllocateInfo cmd_alloc_info = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -407,24 +479,13 @@ static struct VK_Buffer vk_create_and_upload_buffer(struct VK *vk, VkBufferUsage
 
 	// -- Actual transfer commands
 
-#if WITH_STAGING_ARENA
 	VkBufferCopy buffer_copy = {
 		.srcOffset = staging_buffer_offset,
 		.dstOffset = 0,
 		.size = size
 	};
 
-	vkCmdCopyBuffer(cmdbuf, vk->staging_buffer.buffer.handle, buffer.handle, 1, &buffer_copy);
-#else
-	VkBufferCopy buffer_copy = {
-		.srcOffset = 0,
-		.dstOffset = 0,
-		.size = size
-	};
-
-	vkCmdCopyBuffer(cmdbuf, staging_buffer.handle, buffer.handle, 1, &buffer_copy);
-#endif
-	
+	vkCmdCopyBuffer(cmdbuf, vk->staging_buffer.buffer.handle, buffer.handle, 1, &buffer_copy);	
 	// --
 
 	VK_CHECK(vkEndCommandBuffer(cmdbuf));
@@ -441,15 +502,10 @@ static struct VK_Buffer vk_create_and_upload_buffer(struct VK *vk, VkBufferUsage
 	vkResetFences(vk->device, 1, &vk->upload_fence);	
 	vkResetCommandPool(vk->device, vk->command_pool_upload, 0);
 
-#if WITH_STAGING_ARENA
-	vk->staging_buffer.top = original_staging_buffer_top;
-#else
-	/* free staging buffer */
-	vkDestroyBuffer(vk->device, staging_buffer.handle, NULL);
-	vk->scratch_mem.top -= size;    
-#endif
-    
+    vk->staging_buffer.top = 0;
+
     LOG("Created buffer and uploaded to device local memory\n");
+#endif
 	
 	return buffer;
 }
@@ -1340,6 +1396,8 @@ static void scene_init(struct Render_State *r, struct VK *vk)
             vk->meshes[vk->mesh_count++] = upload_mesh_from_raw_data(vk, mesh_data);
             free(mesh_data);            
         }
+
+        vk_staging_queue_flush(vk);
     }
 
     /* Uniform buffer init */
