@@ -322,7 +322,7 @@ static struct VK_Buffer vk_create_buffer_ex(struct VK *vk, struct VK_Mem_Arena *
     return (struct VK_Buffer) {
         .handle = buffer,
         .offset = buffer_addr,
-        .size = mem_requirements.size
+        .size = size // NOTE: Here we do not use mem_requirements.size because that can be bigger than the wanted buffer size
     };
     
     LOG("Created buffer\n");
@@ -440,10 +440,10 @@ static struct VK_Buffer vk_create_and_upload_buffer(struct VK *vk, VkBufferUsage
 	
 	// TODO: Couple staging buffer and allocation as well, we shouldn't guess that it's in vk->scratch_mem!!
 	void *mapped_mem;
-	vkMapMemory(vk->device, vk->scratch_mem.allocation, vk->staging_buffer.buffer.offset + staging_buffer_offset, buffer.size, 0, &mapped_mem);
+	VK_CHECK(vkMapMemory(vk->device, vk->scratch_mem.allocation, vk->staging_buffer.buffer.offset + staging_buffer_offset, buffer.size, 0, &mapped_mem));
 	memcpy(mapped_mem, data, size);
 	vkUnmapMemory(vk->device, vk->scratch_mem.allocation);
-	
+
     vk->staging_queue.entries[vk->staging_queue.entries_top].destination_buffer = buffer.handle;
     vk->staging_queue.entries[vk->staging_queue.entries_top].size = buffer.size;
     vk->staging_queue.entries[vk->staging_queue.entries_top].offset_in_staging_buffer = staging_buffer_offset;
