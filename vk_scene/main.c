@@ -2,7 +2,6 @@
 // We need to be drawing multiple meshes in a "scene", using GPU-driven rendering
 //
 // TODO: Put all meshes into same vertex/index buffer
-// TODO: Put all entity uniforms into one buffer
 // TODO: Switch to draw indirect
 // TODO: Switch to vertex pulling
 
