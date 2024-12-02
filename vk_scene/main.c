@@ -1,7 +1,6 @@
 // This is still WIP!
 // We need to be drawing multiple meshes in a "scene", using GPU-driven rendering
 //
-// TODO: Put all meshes into same vertex/index buffer
 // TODO: Switch to draw indirect
 // TODO: Switch to vertex pulling
 
@@ -86,9 +85,6 @@ struct VK_Staging_Queue {
 };
 
 struct Mesh {
-    struct VK_Buffer vert_buf;
-    struct VK_Buffer index_buf;
-    
     uint32_t index_offset;
     uint32_t vertex_offset;
 
@@ -165,8 +161,8 @@ struct VK {
     struct VK_Buffer global_uniform_buffer;
     struct VK_Buffer instance_buffer;
 
-    struct VK_Buffer vertex_buffer;
-    struct VK_Buffer index_buffer;
+    struct VK_Buffer_Arena vertex_buffer;
+    struct VK_Buffer_Arena index_buffer;
     // --
 };
 
@@ -449,7 +445,7 @@ static void vk_staging_queue_flush(struct VK *vk)
 }
 
 // NOTE: With WITH_GROUPED_STAGING_TRANSFER on, the buffer returned is not usable until vk_staging_queue_flush is called.
-static void vk_update_buffer_staged(struct VK *vk, struct VK_Buffer buffer, void *data, size_t offset, size_t size)
+static void vk_update_buffer_staged(struct VK *vk, struct VK_Buffer buffer, const void *data, size_t offset, size_t size)
 {
     assert(offset + size <= buffer.size);
 
@@ -463,7 +459,7 @@ static void vk_update_buffer_staged(struct VK *vk, struct VK_Buffer buffer, void
     assert(size < vk->staging_buffer.capacity - vk->staging_buffer.top);
 
     // TODO: Couple staging buffer and allocation as well, we shouldn't guess that it's in vk->scratch_mem!!
-    const uint64_t staging_buffer_offset = vk_buffer_arena_push(vk, &vk->staging_buffer, buffer.size);
+    const uint64_t staging_buffer_offset = vk_buffer_arena_push(vk, &vk->staging_buffer, size);
 
     void *mapped_mem;
     VK_CHECK(vkMapMemory(vk->device, vk->scratch_mem.allocation, vk->staging_buffer.buffer.offset + staging_buffer_offset, buffer.size, 0, &mapped_mem));
@@ -471,14 +467,13 @@ static void vk_update_buffer_staged(struct VK *vk, struct VK_Buffer buffer, void
     vkUnmapMemory(vk->device, vk->scratch_mem.allocation);
 
     vk->staging_queue.entries[vk->staging_queue.entries_top].destination_buffer = buffer.handle;
-    vk->staging_queue.entries[vk->staging_queue.entries_top].size = buffer.size;
+    vk->staging_queue.entries[vk->staging_queue.entries_top].size = size;
     vk->staging_queue.entries[vk->staging_queue.entries_top].offset_in_staging_buffer = staging_buffer_offset;
     vk->staging_queue.entries[vk->staging_queue.entries_top].offset_in_destination_buffer = offset;
 
     vk->staging_queue.entries_top++;
 }
 
-// NOTE: With WITH_GROUPED_STAGING_TRANSFER on, the buffer returned is not usable until vk_staging_queue_flush is called.
 static struct VK_Buffer vk_create_and_upload_buffer(struct VK *vk, VkBufferUsageFlagBits usage, const void *data, size_t size)
 {
 	struct VK_Buffer buffer = vk_create_buffer_ex(vk, &vk->gpu_mem, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, size);
@@ -1365,8 +1360,13 @@ static struct Mesh upload_mesh_from_raw_data(struct VK *vk, const char *mesh_dat
         .index_count = index_count
     };
 
-    mesh.vert_buf = vk_create_and_upload_buffer(vk, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vert_buffer_data, vert_buffer_size);
-    mesh.index_buf = vk_create_and_upload_buffer(vk, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, index_buffer_data, index_buffer_size);
+    uint64_t vertex_buffer_offset = vk_buffer_arena_push(vk, &vk->vertex_buffer, vert_buffer_size);
+    vk_update_buffer_staged(vk, vk->vertex_buffer.buffer, vert_buffer_data, vertex_buffer_offset, vert_buffer_size);
+    mesh.vertex_offset = vertex_buffer_offset / vert_buffer_stride_bytes;
+
+    uint64_t index_buffer_offset = vk_buffer_arena_push(vk, &vk->vertex_buffer, index_buffer_size);
+    vk_update_buffer_staged(vk, vk->index_buffer.buffer, index_buffer_data, index_buffer_offset, index_buffer_size);    
+    mesh.index_offset = index_buffer_offset / 2;
 
     LOG("Uploaded mesh from raw data\n");
     
@@ -1379,6 +1379,9 @@ static void scene_init(struct Render_State *r, struct VK *vk)
 
     /* Geometry init */
     {
+        vk->vertex_buffer = vk_alloc_buffer_arena(vk, &vk->gpu_mem, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, (16 * 1024 * 1024));
+        vk->index_buffer = vk_alloc_buffer_arena(vk, &vk->gpu_mem, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, (8 * 1024 * 1024));
+
         const char *mesh_paths[] = {
             "data/suzanne.bin",
             "data/cube.bin"
@@ -1547,6 +1550,11 @@ static void render(struct Render_State *r, struct VK *vk)
 		/* record commands */
 		vkCmdBeginRenderPass(cmdbuf, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
 
+        VkBuffer buffers[] = { vk->vertex_buffer.buffer.handle };
+        VkDeviceSize offsets[] = { 0 };
+        vkCmdBindVertexBuffers(cmdbuf, 0, countof(buffers), buffers, offsets);
+        vkCmdBindIndexBuffer(cmdbuf, vk->index_buffer.buffer.handle, 0, VK_INDEX_TYPE_UINT16);
+
         for(int i = 0; i < r->scene.entities_count; ++i) {
             struct Entity *entity = &r->scene.entities[i];
 
@@ -1564,18 +1572,13 @@ static void render(struct Render_State *r, struct VK *vk)
             vk_update_buffer(vk, vk->instance_buffer, &constants, i * sizeof(constants), sizeof(constants));
 
             struct Mesh *mesh = &vk->meshes[entity->mesh_idx];
-            
-            VkBuffer buffers[] = { mesh->vert_buf.handle };
-            VkDeviceSize offsets[] = { 0 };
-            vkCmdBindVertexBuffers(cmdbuf, 0, countof(buffers), buffers, offsets);
-            vkCmdBindIndexBuffer(cmdbuf, mesh->index_buf.handle, 0, VK_INDEX_TYPE_UINT16);
 
             vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->lit_pipeline);
 
             vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->simple_piepline_layout, 0, 1, &vk->global_desc, 0, NULL);
 
-            vkCmdPushConstants(cmdbuf, vk->simple_piepline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
-            vkCmdDrawIndexed(cmdbuf, mesh->index_count, 1, 0, 0, i);
+            //vkCmdPushConstants(cmdbuf, vk->simple_piepline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
+            vkCmdDrawIndexed(cmdbuf, mesh->index_count, 1, mesh->index_offset, mesh->vertex_offset, i);
         }
 
 		vkCmdEndRenderPass(cmdbuf);
