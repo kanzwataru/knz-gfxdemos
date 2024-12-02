@@ -1,3 +1,4 @@
+#include <vulkan/vulkan_core.h>
 #define CGLM_FORCE_LEFT_HANDED
 #define CGLM_FORCE_DEPTH_ZERO_TO_ONE
 
@@ -698,8 +699,18 @@ static void vk_init(struct VK *vk)
 		vkEnumeratePhysicalDevices(vk->instance, &device_count, devices);
 		CHECK(device_count, "No GPUs found");
 
-		// TODO: Favour discrete GPU over integrated
-		vk->physical_device = devices[0];
+        int target_index = 0;
+        for(int i = 0; i < device_count; ++i) {
+            VkPhysicalDeviceProperties props;
+            vkGetPhysicalDeviceProperties(devices[i], &props);
+
+            if(props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+                target_index = i;
+                break;
+            }
+        }
+
+		vk->physical_device = devices[target_index];
 	}
 
     /* memory query */
