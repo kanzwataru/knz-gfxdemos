@@ -10,6 +10,10 @@ Check out the simple Blender exporter under vk_meshview/tools!
 * vk_hello: Just a simple Hello World for Vulkan
 * vk_meshview: Simply displaying arbitrary meshes exported from Blender. Includes Blender exporter and sample data.
 * vk_hlsl: Sample using HLSL instead of GLSL, forked from vk_meshview
+* vk_scene: Drawing multiple meshes, using GPU-driven rendering (WIP!)
+
+All code (including init) is duplicated between the sample programs,
+in order to keep it easy to read and modify.
 
 ## How to compile
 This project uses a simple CMake setup. It handles copying sample data and compiling shaders as well.

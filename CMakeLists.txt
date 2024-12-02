@@ -120,3 +120,11 @@ f_add_shader_hlsl(vk_hlsl lit vs vs_main)
 
 f_add_data(vk_hlsl cube.bin)
 f_add_data(vk_hlsl suzanne.bin)
+
+# vk_scene
+f_add_target(vk_scene vk_scene/main.c)
+
+f_add_shader(vk_scene lit_frag frag)
+f_add_shader(vk_scene lit_vert vert)
+
+f_add_data(vk_scene cube.bin)
