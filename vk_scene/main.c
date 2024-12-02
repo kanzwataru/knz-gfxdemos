@@ -2,7 +2,6 @@
 // We need to be drawing multiple meshes in a "scene", using GPU-driven rendering
 //
 // TODO: Switch to vertex pulling
-// TODO: Draw multiple things in the scene
 // TODO: Switch to draw indirect
 
 #include <vulkan/vulkan_core.h>
