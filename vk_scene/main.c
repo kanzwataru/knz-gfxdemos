@@ -175,8 +175,8 @@ struct Scene {
 
 struct Render_State {
 	uint64_t frame_number;
-	int mesh_idx;
-	bool unlit_shader;
+
+    vec3s clear_color;
 
     struct Scene scene;
 };
@@ -1417,6 +1417,25 @@ static void scene_init(struct Render_State *r, struct VK *vk)
     LOG("Scene init done\n");
 }
 
+static void update(struct Render_State *r)
+{
+    /* Clear Color Pulsing */
+    const float flash = fabs(sinf(r->frame_number / 120.0f));
+    r->clear_color = (vec3s){ 0.26f * flash, 0.16f * flash, 0.45f * flash };
+
+    /* Entity Animation */
+    const float y = sinf(r->frame_number / 40.0f) * 0.25f;
+
+    for(int i = 0; i < r->scene.entities_count; ++i) {
+        struct Entity *e = &r->scene.entities[i];
+
+        e->position.y = y - 0.25f;
+
+        e->rotation.y += 0.5f;
+        e->rotation.y = fmodf(e->rotation.y, 360.0f);
+    }
+}
+
 static void render(struct Render_State *r, struct VK *vk)
 {
 	/* sync */
@@ -1466,8 +1485,6 @@ static void render(struct Render_State *r, struct VK *vk)
 	/* app-specific */
 	{
 		/* update state and set up data */
-		const float flash = fabs(sinf(r->frame_number / 120.0f));
-		
 		mat4s view = glms_mat4_identity();
 		mat4s proj = glms_perspective(glm_rad(70.0f), (float)WIDTH / (float)HEIGHT, 0.1f, 1000.0f);
 		proj.raw[1][1] *= -1;
@@ -1479,7 +1496,7 @@ static void render(struct Render_State *r, struct VK *vk)
 		};
 
 		clear_values[0] = (VkClearValue) {
-			.color.float32 = {0.26f * flash, 0.16f * flash, 0.45f * flash, 1.0f}
+			.color.float32 = { r->clear_color.x, r->clear_color.y, r->clear_color.z, 1.0f }
 		};
 
 		/* update GPU data */
@@ -1495,9 +1512,10 @@ static void render(struct Render_State *r, struct VK *vk)
                 .model_matrix = glms_mat4_identity(),
             };
 
-            const float y = sinf(r->frame_number / 40.0f) * 0.25f;
-            constants.model_matrix = glms_translate_make((vec3s){entity->position.x, y - entity->position.y, entity->position.z});
-            constants.model_matrix = glms_rotate(constants.model_matrix, glm_rad(r->frame_number), (vec3s){0.0f, 1.0f, 0.0f});
+            constants.model_matrix = glms_translate_make((vec3s){entity->position.x, entity->position.y, entity->position.z});
+            constants.model_matrix = glms_rotate_x(constants.model_matrix, glm_rad(entity->rotation.x));
+            constants.model_matrix = glms_rotate_y(constants.model_matrix, glm_rad(entity->rotation.y));
+            constants.model_matrix = glms_rotate_z(constants.model_matrix, glm_rad(entity->rotation.z));
             constants.model_matrix = glms_scale(constants.model_matrix, entity->scale);
 
             struct Mesh *mesh = &vk->meshes[entity->mesh_idx];
@@ -1580,7 +1598,8 @@ int main(int argc, char **argv)
 			}
 			else if(event.type == SDL_KEYDOWN) {
 				switch(event.key.keysym.sym) {
-				case SDLK_SPACE:
+				/*
+                case SDLK_SPACE:
 					r->unlit_shader = !r->unlit_shader;
 					break;
 				case SDLK_LEFT:
@@ -1589,6 +1608,7 @@ int main(int argc, char **argv)
 				case SDLK_RIGHT:
 					r->mesh_idx = (r->mesh_idx + 1) % vk->mesh_count;
 					break;
+                */
 				}
 			}
 		}
@@ -1600,6 +1620,7 @@ int main(int argc, char **argv)
             window_flags = SDL_GetWindowFlags(s_window);
         }
 
+        update(r);
 		render(r, vk);
 
 		++s_render_state.frame_number;
