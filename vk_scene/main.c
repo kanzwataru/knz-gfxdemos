@@ -1,8 +1,10 @@
 // This is still WIP!
 // We need to be drawing multiple meshes in a "scene", using GPU-driven rendering
 //
-// TODO: Switch to vertex pulling
+// TODO: Put all meshes into same vertex/index buffer
+// TODO: Put all entity uniforms into one buffer
 // TODO: Switch to draw indirect
+// TODO: Switch to vertex pulling
 
 #include <vulkan/vulkan_core.h>
 #define CGLM_FORCE_LEFT_HANDED
@@ -157,6 +159,7 @@ struct VK {
     
     /* Buffers */
     struct VK_Buffer global_uniform_buffer;
+    struct VK_Buffer instance_buffer;
     // --
 };
 
@@ -180,7 +183,7 @@ struct Render_State {
     struct Scene scene;
 };
 
-struct Push_Constant_Data {
+struct Instance_Data {
 	mat4s model_matrix;
 };
 
@@ -1168,6 +1171,12 @@ static void vk_init(struct VK *vk)
                 .descriptorCount = 1,
                 .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
+            },
+            {
+                .binding = 1,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
             }
         };
 
@@ -1183,7 +1192,8 @@ static void vk_init(struct VK *vk)
 
         /* descriptor pool */
         VkDescriptorPoolSize sizes[] = {
-            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10 }
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10 },
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}
         };
 
         VkDescriptorPoolCreateInfo pool_info = {
@@ -1216,7 +1226,7 @@ static void vk_init(struct VK *vk)
 			{
 				.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 				.offset = 0,
-				.size = sizeof(struct Push_Constant_Data)
+				.size = sizeof(struct Instance_Data)
 			}
 		};
 
@@ -1396,6 +1406,28 @@ static void scene_init(struct Render_State *r, struct VK *vk)
         vkUpdateDescriptorSets(vk->device, 1, &set_write, 0, NULL);
     }
 
+    /* Instance buffer init */
+    {
+        vk->instance_buffer = vk_create_buffer(vk, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, sizeof(struct Instance_Data) * countof(r->scene.entities));
+
+        VkDescriptorBufferInfo desc_buf_info = {
+            .buffer = vk->instance_buffer.handle,
+            .offset = 0,
+            .range = vk->instance_buffer.size,
+        };
+        
+        VkWriteDescriptorSet set_write = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstBinding = 1,
+            .dstSet = vk->global_desc,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .pBufferInfo = &desc_buf_info
+        };
+        
+        vkUpdateDescriptorSets(vk->device, 1, &set_write, 0, NULL);
+    }
+
     /* Scene entities init */
     {
         r->scene.entities[r->scene.entities_count++] = (struct Entity) {
@@ -1507,7 +1539,7 @@ static void render(struct Render_State *r, struct VK *vk)
         for(int i = 0; i < r->scene.entities_count; ++i) {
             struct Entity *entity = &r->scene.entities[i];
 
-            struct Push_Constant_Data constants = {
+            struct Instance_Data constants = {
                 .model_matrix = glms_mat4_identity(),
             };
 
@@ -1516,6 +1548,9 @@ static void render(struct Render_State *r, struct VK *vk)
             constants.model_matrix = glms_rotate_y(constants.model_matrix, glm_rad(entity->rotation.y));
             constants.model_matrix = glms_rotate_z(constants.model_matrix, glm_rad(entity->rotation.z));
             constants.model_matrix = glms_scale(constants.model_matrix, entity->scale);
+
+            // TODO: Do these all in one shot.
+            vk_update_buffer(vk, vk->instance_buffer, &constants, i * sizeof(constants), sizeof(constants));
 
             struct Mesh *mesh = &vk->meshes[entity->mesh_idx];
             
@@ -1529,7 +1564,7 @@ static void render(struct Render_State *r, struct VK *vk)
             vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->simple_piepline_layout, 0, 1, &vk->global_desc, 0, NULL);
 
             vkCmdPushConstants(cmdbuf, vk->simple_piepline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
-            vkCmdDrawIndexed(cmdbuf, mesh->index_count, 1, 0, 0, 0);
+            vkCmdDrawIndexed(cmdbuf, mesh->index_count, 1, 0, 0, i);
         }
 
 		vkCmdEndRenderPass(cmdbuf);
