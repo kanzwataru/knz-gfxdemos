@@ -78,6 +78,7 @@ struct VK_Buffer_Arena {
 struct VK_Staging_Queue {
     struct {
         uint64_t offset_in_staging_buffer;
+        uint64_t offset_in_destination_buffer;
         uint64_t size;
         VkBuffer destination_buffer;
     } entries[512];
@@ -87,6 +88,10 @@ struct VK_Staging_Queue {
 struct Mesh {
     struct VK_Buffer vert_buf;
     struct VK_Buffer index_buf;
+    
+    uint32_t index_offset;
+    uint32_t vertex_offset;
+
     uint32_t vert_count;
     uint32_t index_count;
 };
@@ -159,6 +164,9 @@ struct VK {
     /* Buffers */
     struct VK_Buffer global_uniform_buffer;
     struct VK_Buffer instance_buffer;
+
+    struct VK_Buffer vertex_buffer;
+    struct VK_Buffer index_buffer;
     // --
 };
 
@@ -372,14 +380,15 @@ static struct VK_Buffer_Arena vk_alloc_buffer_arena(struct VK *vk, struct VK_Mem
     };
 }
 
-static uint64_t vk_buffer_arena_push(struct VK *vk, struct VK_Buffer_Arena *arena, VkMemoryRequirements mem_req)
+static uint64_t vk_buffer_arena_push(struct VK *vk, struct VK_Buffer_Arena *arena, size_t size)
 {
     // TODO: Maybe deduplicate with vk_mem_arena_push, the logic is exactly the same
-    arena->top = align_address(arena->top, mem_req.alignment);
+    //arena->top = align_address(arena->top, mem_req.alignment);
+    arena->top = align_address(arena->top, 128); // TODO: What should be done about alignment???
     const uint64_t buffer_address = arena->top;
-    arena->top += mem_req.size;
+    arena->top += size;
 
-    LOG("Push to buffer arena %p size: %.3fKB (%.3f%% usage)\n", arena, (float)mem_req.size / 1024.0f, 100 * ((float)arena->top / (float)arena->capacity));
+    LOG("Push to buffer arena %p size: %.3fKB (%.3f%% usage)\n", arena, (float)size / 1024.0f, 100 * ((float)arena->top / (float)arena->capacity));
 
     return buffer_address;
 }
@@ -411,10 +420,9 @@ static void vk_staging_queue_flush(struct VK *vk)
     for(uint32_t i = 0; i < vk->staging_queue.entries_top; ++i) {
         struct VkBufferCopy buffer_copy = {
             .srcOffset = vk->staging_queue.entries[i].offset_in_staging_buffer,
-            .dstOffset = 0,
+            .dstOffset = vk->staging_queue.entries[i].offset_in_destination_buffer,
             .size = vk->staging_queue.entries[i].size
         };
-
 
         vkCmdCopyBuffer(cmdbuf, vk->staging_buffer.buffer.handle, vk->staging_queue.entries[i].destination_buffer, 1, &buffer_copy);
     }
@@ -441,8 +449,10 @@ static void vk_staging_queue_flush(struct VK *vk)
 }
 
 // NOTE: With WITH_GROUPED_STAGING_TRANSFER on, the buffer returned is not usable until vk_staging_queue_flush is called.
-static struct VK_Buffer vk_create_and_upload_buffer(struct VK *vk, VkBufferUsageFlagBits usage, const void *data, size_t size)
+static void vk_update_buffer_staged(struct VK *vk, struct VK_Buffer buffer, void *data, size_t offset, size_t size)
 {
+    assert(offset + size <= buffer.size);
+
     /* flush the staging queue if we can't fit any more */
     const bool staging_buffer_full = size > vk->staging_buffer.capacity - vk->staging_buffer.top;
     const bool staging_queue_full = vk->staging_queue.entries_top == countof(vk->staging_queue.entries);
@@ -452,27 +462,29 @@ static struct VK_Buffer vk_create_and_upload_buffer(struct VK *vk, VkBufferUsage
 
     assert(size < vk->staging_buffer.capacity - vk->staging_buffer.top);
 
-	/* create the real buffer */
-	struct VK_Buffer buffer = vk_create_buffer_ex(vk, &vk->gpu_mem, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, size);
-	vk_push_deletable(vk, vkDestroyBuffer, buffer.handle);	
+    // TODO: Couple staging buffer and allocation as well, we shouldn't guess that it's in vk->scratch_mem!!
+    const uint64_t staging_buffer_offset = vk_buffer_arena_push(vk, &vk->staging_buffer, buffer.size);
 
-	VkMemoryRequirements mem_req;
-	vkGetBufferMemoryRequirements(vk->device, buffer.handle, &mem_req);
-	const uint64_t staging_buffer_offset = vk_buffer_arena_push(vk, &vk->staging_buffer, mem_req);
-	
-	// TODO: Couple staging buffer and allocation as well, we shouldn't guess that it's in vk->scratch_mem!!
-	void *mapped_mem;
-	VK_CHECK(vkMapMemory(vk->device, vk->scratch_mem.allocation, vk->staging_buffer.buffer.offset + staging_buffer_offset, buffer.size, 0, &mapped_mem));
-	memcpy(mapped_mem, data, size);
-	vkUnmapMemory(vk->device, vk->scratch_mem.allocation);
+    void *mapped_mem;
+    VK_CHECK(vkMapMemory(vk->device, vk->scratch_mem.allocation, vk->staging_buffer.buffer.offset + staging_buffer_offset, buffer.size, 0, &mapped_mem));
+    memcpy(mapped_mem, data, size);
+    vkUnmapMemory(vk->device, vk->scratch_mem.allocation);
 
     vk->staging_queue.entries[vk->staging_queue.entries_top].destination_buffer = buffer.handle;
     vk->staging_queue.entries[vk->staging_queue.entries_top].size = buffer.size;
     vk->staging_queue.entries[vk->staging_queue.entries_top].offset_in_staging_buffer = staging_buffer_offset;
+    vk->staging_queue.entries[vk->staging_queue.entries_top].offset_in_destination_buffer = offset;
 
     vk->staging_queue.entries_top++;
+}
 
-    LOG("Created buffer, uploaded to staging buffer. Queued staging transfer for later.\n");
+// NOTE: With WITH_GROUPED_STAGING_TRANSFER on, the buffer returned is not usable until vk_staging_queue_flush is called.
+static struct VK_Buffer vk_create_and_upload_buffer(struct VK *vk, VkBufferUsageFlagBits usage, const void *data, size_t size)
+{
+	struct VK_Buffer buffer = vk_create_buffer_ex(vk, &vk->gpu_mem, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, size);
+	vk_push_deletable(vk, vkDestroyBuffer, buffer.handle);	
+
+    vk_update_buffer_staged(vk, buffer, data, 0, size);
 
 	return buffer;
 }
