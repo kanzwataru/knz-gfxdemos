@@ -128,3 +128,4 @@ f_add_shader(vk_scene lit_frag frag)
 f_add_shader(vk_scene lit_vert vert)
 
 f_add_data(vk_scene cube.bin)
+f_add_data(vk_scene suzanne.bin)

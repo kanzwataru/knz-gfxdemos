@@ -1,3 +1,10 @@
+// This is still WIP!
+// We need to be drawing multiple meshes in a "scene", using GPU-driven rendering
+//
+// TODO: Switch to vertex pulling
+// TODO: Draw multiple things in the scene
+// TODO: Switch to draw indirect
+
 #include <vulkan/vulkan_core.h>
 #define CGLM_FORCE_LEFT_HANDED
 #define CGLM_FORCE_DEPTH_ZERO_TO_ONE
@@ -154,10 +161,24 @@ struct VK {
     // --
 };
 
+struct Entity {
+    int mesh_idx;
+    vec3s position;
+    vec3s rotation;
+    vec3s scale;
+};
+
+struct Scene {
+    struct Entity entities[4096];
+    size_t entities_count;
+};
+
 struct Render_State {
 	uint64_t frame_number;
 	int mesh_idx;
 	bool unlit_shader;
+
+    struct Scene scene;
 };
 
 struct Push_Constant_Data {
@@ -1339,7 +1360,7 @@ static void scene_init(struct Render_State *r, struct VK *vk)
     /* Geometry init */
     {
         const char *mesh_paths[] = {
-            //"data/suzanne.bin",
+            "data/suzanne.bin",
             "data/cube.bin"
         };
 
@@ -1374,6 +1395,23 @@ static void scene_init(struct Render_State *r, struct VK *vk)
         };
         
         vkUpdateDescriptorSets(vk->device, 1, &set_write, 0, NULL);
+    }
+
+    /* Scene entities init */
+    {
+        r->scene.entities[r->scene.entities_count++] = (struct Entity) {
+            .mesh_idx = 0,
+            .position = { -1.5f, 0.15f, 3.5f },
+            .rotation = { 0.0f, 0.0f, 0.0f },
+            .scale = { 1.0f, 1.0f, 1.0f}
+        };
+
+        r->scene.entities[r->scene.entities_count++] = (struct Entity) {
+            .mesh_idx = 1,
+            .position = { 1.5f, 0.15f, 3.5f },
+            .rotation = { 0.0f, 0.0f, 0.0f },
+            .scale = { 0.5f, 0.5f, 0.5f}
+        };
     }
     
     LOG("Scene init done\n");
@@ -1434,14 +1472,6 @@ static void render(struct Render_State *r, struct VK *vk)
 		mat4s proj = glms_perspective(glm_rad(70.0f), (float)WIDTH / (float)HEIGHT, 0.1f, 1000.0f);
 		proj.raw[1][1] *= -1;
 
-		struct Push_Constant_Data constants = {
-			.model_matrix = glms_mat4_identity(),
-		};
-
-		const float y = sinf(r->frame_number / 40.0f) * 0.25f;
-        constants.model_matrix = glms_translate_make((vec3s){0.0f, y - 0.15f, 3.5f});
-		constants.model_matrix = glms_rotate(constants.model_matrix, glm_rad(r->frame_number), (vec3s){0.0f, 1.0f, 0.0f});
-
 		struct Global_Uniform_Data uniforms = {
 			.view_mat = view,
 			.proj_mat = proj,
@@ -1458,19 +1488,32 @@ static void render(struct Render_State *r, struct VK *vk)
 		/* record commands */
 		vkCmdBeginRenderPass(cmdbuf, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
 
-        struct Mesh *mesh = &vk->meshes[r->mesh_idx];
-        
-        VkBuffer buffers[] = { mesh->vert_buf.handle };
-		VkDeviceSize offsets[] = { 0 };
-		vkCmdBindVertexBuffers(cmdbuf, 0, countof(buffers), buffers, offsets);
-        vkCmdBindIndexBuffer(cmdbuf, mesh->index_buf.handle, 0, VK_INDEX_TYPE_UINT16);
+        for(int i = 0; i < r->scene.entities_count; ++i) {
+            struct Entity *entity = &r->scene.entities[i];
 
-		vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->lit_pipeline);
+            struct Push_Constant_Data constants = {
+                .model_matrix = glms_mat4_identity(),
+            };
 
-		vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->simple_piepline_layout, 0, 1, &vk->global_desc, 0, NULL);
+            const float y = sinf(r->frame_number / 40.0f) * 0.25f;
+            constants.model_matrix = glms_translate_make((vec3s){entity->position.x, y - entity->position.y, entity->position.z});
+            constants.model_matrix = glms_rotate(constants.model_matrix, glm_rad(r->frame_number), (vec3s){0.0f, 1.0f, 0.0f});
+            constants.model_matrix = glms_scale(constants.model_matrix, entity->scale);
 
-		vkCmdPushConstants(cmdbuf, vk->simple_piepline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
-        vkCmdDrawIndexed(cmdbuf, mesh->index_count, 1, 0, 0, 0);
+            struct Mesh *mesh = &vk->meshes[entity->mesh_idx];
+            
+            VkBuffer buffers[] = { mesh->vert_buf.handle };
+            VkDeviceSize offsets[] = { 0 };
+            vkCmdBindVertexBuffers(cmdbuf, 0, countof(buffers), buffers, offsets);
+            vkCmdBindIndexBuffer(cmdbuf, mesh->index_buf.handle, 0, VK_INDEX_TYPE_UINT16);
+
+            vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->lit_pipeline);
+
+            vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->simple_piepline_layout, 0, 1, &vk->global_desc, 0, NULL);
+
+            vkCmdPushConstants(cmdbuf, vk->simple_piepline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
+            vkCmdDrawIndexed(cmdbuf, mesh->index_count, 1, 0, 0, 0);
+        }
 
 		vkCmdEndRenderPass(cmdbuf);
 	}
