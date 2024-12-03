@@ -603,6 +603,10 @@ static VkPipeline vk_create_pipeline(struct VK *vk,
                                      VkPipelineShaderStageCreateInfo *shader_stages,
                                      int shader_stage_count)
 {
+    VkPipelineVertexInputStateCreateInfo vertex_input_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+    };
+
     VkPipelineInputAssemblyStateCreateInfo input_assembly_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
         .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
@@ -692,6 +696,7 @@ static VkPipeline vk_create_pipeline(struct VK *vk,
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .stageCount = shader_stage_count,
         .pStages = shader_stages,
+        .pVertexInputState = &vertex_input_info,
         .pInputAssemblyState = &input_assembly_info,
         .pViewportState = &viewport_state_info,
         .pRasterizationState = &rasterizer_info,
@@ -1285,7 +1290,7 @@ static void vk_init(struct VK *vk)
         /* descriptor pool */
         VkDescriptorPoolSize sizes[] = {
             { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10 },
-            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 }
         };
 
         VkDescriptorPoolCreateInfo pool_info = {
