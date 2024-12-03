@@ -1,7 +1,9 @@
 // This is still WIP!
 // We need to be drawing multiple meshes in a "scene", using GPU-driven rendering
 //
-// TODO: Switch to vertex pulling
+// TODO: Add textures
+// TODO: Make textures bindless
+// TODO: Switch to BDA for all buffers (if necessary...)
 
 #include <vulkan/vulkan_core.h>
 #define CGLM_FORCE_LEFT_HANDED
