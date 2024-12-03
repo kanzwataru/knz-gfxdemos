@@ -518,44 +518,6 @@ static VkPipeline vk_create_pipeline(struct VK *vk,
                                      VkPipelineShaderStageCreateInfo *shader_stages,
                                      int shader_stage_count)
 {
-    VkVertexInputBindingDescription binding_descs[] = {
-        {
-            .binding = 0,
-            .stride = sizeof(float) * 8,
-            .inputRate = VK_VERTEX_INPUT_RATE_VERTEX
-        },
-    };
-    
-    VkVertexInputAttributeDescription attr_descs[] = {
-        {
-            .location = 0,
-            .binding = 0,
-            .format = VK_FORMAT_R32G32B32_SFLOAT,
-            .offset = 0
-        },
-        {
-            .location = 1,
-            .binding = 0,
-            .format = VK_FORMAT_R32G32B32_SFLOAT,
-            .offset = sizeof(float) * 3
-        },
-        {
-            .location = 2,
-            .binding = 0,
-            .format = VK_FORMAT_R32G32B32A32_SFLOAT,
-            .offset = sizeof(float) * 6
-        }
-    };
-
-    VkPipelineVertexInputStateCreateInfo vertex_input_info = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        // Fill these in later
-        .vertexBindingDescriptionCount = countof(binding_descs),
-        .pVertexBindingDescriptions = binding_descs,
-        .vertexAttributeDescriptionCount = countof(attr_descs),
-        .pVertexAttributeDescriptions = attr_descs,
-    };
-
     VkPipelineInputAssemblyStateCreateInfo input_assembly_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
         .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
@@ -645,7 +607,6 @@ static VkPipeline vk_create_pipeline(struct VK *vk,
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .stageCount = shader_stage_count,
         .pStages = shader_stages,
-        .pVertexInputState = &vertex_input_info,
         .pInputAssemblyState = &input_assembly_info,
         .pViewportState = &viewport_state_info,
         .pRasterizationState = &rasterizer_info,
@@ -1217,6 +1178,12 @@ static void vk_init(struct VK *vk)
                 .descriptorCount = 1,
                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
+            },
+            {
+                .binding = 2,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
             }
         };
 
@@ -1405,7 +1372,7 @@ static void scene_init(struct Render_State *r, struct VK *vk)
 
     /* Geometry init */
     {
-        vk->vertex_buffer = vk_alloc_buffer_arena(vk, &vk->gpu_mem, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, (16 * 1024 * 1024));
+        vk->vertex_buffer = vk_alloc_buffer_arena(vk, &vk->gpu_mem, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, (16 * 1024 * 1024));
         vk->index_buffer = vk_alloc_buffer_arena(vk, &vk->gpu_mem, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, (8 * 1024 * 1024));
 
         const char *mesh_paths[] = {
@@ -1422,6 +1389,26 @@ static void scene_init(struct Render_State *r, struct VK *vk)
         }
 
         vk_staging_queue_flush(vk);
+
+        {
+            // Vertex buffer is a storage buffer, so update the descriptor
+            VkDescriptorBufferInfo desc_buf_info = {
+                .buffer = vk->vertex_buffer.buffer.handle,
+                .offset = 0,
+                .range = vk->vertex_buffer.top,
+            };
+            
+            VkWriteDescriptorSet set_write = {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstBinding = 2,
+                .dstSet = vk->global_desc,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .pBufferInfo = &desc_buf_info
+            };
+            
+            vkUpdateDescriptorSets(vk->device, 1, &set_write, 0, NULL);
+        }
     }
 
     /* Uniform buffer init */
@@ -1620,7 +1607,6 @@ static void render(struct Render_State *r, struct VK *vk)
 
         VkBuffer buffers[] = { vk->vertex_buffer.buffer.handle };
         VkDeviceSize offsets[] = { 0 };
-        vkCmdBindVertexBuffers(cmdbuf, 0, countof(buffers), buffers, offsets);
         vkCmdBindIndexBuffer(cmdbuf, vk->index_buffer.buffer.handle, 0, VK_INDEX_TYPE_UINT16);
         vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->simple_piepline_layout, 0, 1, &vk->global_desc, 0, NULL);
 
