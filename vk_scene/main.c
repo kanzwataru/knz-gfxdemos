@@ -1,7 +1,6 @@
 // This is still WIP!
 // We need to be drawing multiple meshes in a "scene", using GPU-driven rendering
 //
-// TODO: Switch to draw indirect
 // TODO: Switch to vertex pulling
 
 #include <vulkan/vulkan_core.h>
@@ -337,7 +336,7 @@ static struct VK_Buffer vk_create_buffer(struct VK *vk, struct VK_Mem_Arena *are
     if(arena == &vk->gpu_mem) {
         usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     }
-    
+
     VkBufferCreateInfo buffer_info = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .flags = 0,
@@ -449,7 +448,7 @@ static void vk_staging_queue_flush(struct VK *vk)
     LOG_PREINIT("Finished all pending staging buffer uploads\n");
 }
 
-static void *vk_map_buffer_staged(struct VK *vk, struct VK_Buffer buffer, const void *data, size_t offset, size_t size)
+static void *vk_map_buffer_staged(struct VK *vk, struct VK_Buffer buffer, size_t offset, size_t size)
 {
     assert(offset + size <= buffer.size);
 
@@ -495,7 +494,7 @@ static void vk_update_buffer(struct VK *vk, struct VK_Buffer buf, const void *da
         vkUnmapMemory(vk->device, vk->scratch_mem.allocation);        
     }
     else if(buf.arena == &vk->gpu_mem) {
-        void *mapped_mem = vk_map_buffer_staged(vk, buf, data, offset, size);
+        void *mapped_mem = vk_map_buffer_staged(vk, buf, offset, size);
         memcpy(mapped_mem, data, size);
         vk_unmap_buffer_staged(vk, buf, mapped_mem);
     }
@@ -933,7 +932,9 @@ static void vk_init(struct VK *vk)
 		}
 
 		/* device features */
-        //VkPhysicalDeviceFeatures device_features = {0};
+        VkPhysicalDeviceFeatures device_features = {
+            .multiDrawIndirect = true
+        };
 
 		/* create */
 		VkDeviceCreateInfo create_info = {
@@ -941,7 +942,8 @@ static void vk_init(struct VK *vk)
 			.queueCreateInfoCount = queue_count,
 			.pQueueCreateInfos = queue_infos,
 			.enabledExtensionCount = extension_count,
-			.ppEnabledExtensionNames = extension_names
+			.ppEnabledExtensionNames = extension_names,
+            .pEnabledFeatures = &device_features
 		};
 
 		VK_CHECK(vkCreateDevice(vk->physical_device, &create_info, NULL, &vk->device));
@@ -1468,7 +1470,7 @@ static void scene_init(struct Render_State *r, struct VK *vk)
 
     /* Indirect command buffer init */
     {
-        vk->indirect_command_buffer = vk_create_buffer(vk, &vk->gpu_mem, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, countof(r->scene.entities) * sizeof(VkDrawIndexedIndirectCommand));
+        vk->indirect_command_buffer = vk_create_buffer(vk, &vk->gpu_mem, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, countof(r->scene.entities) * sizeof(VkDrawIndexedIndirectCommand));
     }
 
     /* Scene entities init */
@@ -1579,37 +1581,51 @@ static void render(struct Render_State *r, struct VK *vk)
 		
 		/* record commands */
 		vkCmdBeginRenderPass(cmdbuf, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+        
+        vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->lit_pipeline);
 
         VkBuffer buffers[] = { vk->vertex_buffer.buffer.handle };
         VkDeviceSize offsets[] = { 0 };
         vkCmdBindVertexBuffers(cmdbuf, 0, countof(buffers), buffers, offsets);
         vkCmdBindIndexBuffer(cmdbuf, vk->index_buffer.buffer.handle, 0, VK_INDEX_TYPE_UINT16);
+        vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->simple_piepline_layout, 0, 1, &vk->global_desc, 0, NULL);
+
+        struct Instance_Data *instance_buffer_mapped = vk_map_buffer_staged(vk, vk->instance_buffer, 0, r->scene.entities_count * sizeof(*instance_buffer_mapped));
+        VkDrawIndexedIndirectCommand *indirect_command_buffer_mapped = vk_map_buffer_staged(vk, vk->indirect_command_buffer, 0, r->scene.entities_count * sizeof(*indirect_command_buffer_mapped));
 
         for(int i = 0; i < r->scene.entities_count; ++i) {
             struct Entity *entity = &r->scene.entities[i];
+            struct Instance_Data *instance_data = &instance_buffer_mapped[i];
+            VkDrawIndexedIndirectCommand *draw_cmd = &indirect_command_buffer_mapped[i];
 
-            struct Instance_Data constants = {
-                .model_matrix = glms_mat4_identity(),
+            mat4s model_matrix = glms_mat4_identity();
+            model_matrix = glms_translate_make((vec3s){entity->position.x, entity->position.y, entity->position.z});
+            model_matrix = glms_rotate_x(model_matrix, glm_rad(entity->rotation.x));
+            model_matrix = glms_rotate_y(model_matrix, glm_rad(entity->rotation.y));
+            model_matrix = glms_rotate_z(model_matrix, glm_rad(entity->rotation.z));
+            model_matrix = glms_scale(model_matrix, entity->scale);
+
+            *instance_data = (struct Instance_Data) {
+                .model_matrix = model_matrix,
             };
-
-            constants.model_matrix = glms_translate_make((vec3s){entity->position.x, entity->position.y, entity->position.z});
-            constants.model_matrix = glms_rotate_x(constants.model_matrix, glm_rad(entity->rotation.x));
-            constants.model_matrix = glms_rotate_y(constants.model_matrix, glm_rad(entity->rotation.y));
-            constants.model_matrix = glms_rotate_z(constants.model_matrix, glm_rad(entity->rotation.z));
-            constants.model_matrix = glms_scale(constants.model_matrix, entity->scale);
-
-            // TODO: Do these all in one shot.
-            vk_update_buffer(vk, vk->instance_buffer, &constants, i * sizeof(constants), sizeof(constants));
 
             struct Mesh *mesh = &vk->meshes[entity->mesh_idx];
 
-            vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->lit_pipeline);
+            //vkCmdDrawIndexed(cmdbuf, mesh->index_count, 1, mesh->index_offset, mesh->vertex_offset, i);
 
-            vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->simple_piepline_layout, 0, 1, &vk->global_desc, 0, NULL);
-
-            //vkCmdPushConstants(cmdbuf, vk->simple_piepline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
-            vkCmdDrawIndexed(cmdbuf, mesh->index_count, 1, mesh->index_offset, mesh->vertex_offset, i);
+            *draw_cmd = (VkDrawIndexedIndirectCommand) {
+                .indexCount = mesh->index_count,
+                .instanceCount = 1,
+                .firstIndex = mesh->index_offset,
+                .vertexOffset = mesh->vertex_offset,
+                .firstInstance = i
+            };
         }
+
+        vkCmdDrawIndexedIndirect(cmdbuf, vk->indirect_command_buffer.handle, 0, r->scene.entities_count, sizeof(VkDrawIndexedIndirectCommand));
+
+        vk_unmap_buffer_staged(vk, vk->instance_buffer, instance_buffer_mapped);
+        vk_unmap_buffer_staged(vk, vk->indirect_command_buffer, indirect_command_buffer_mapped);
 
 		vkCmdEndRenderPass(cmdbuf);
 	}
