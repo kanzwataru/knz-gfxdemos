@@ -1446,7 +1446,7 @@ static void scene_init(struct Render_State *r, struct VK *vk)
 
     /* Instance buffer init */
     {
-        vk->instance_buffer = vk_create_buffer(vk, &vk->scratch_mem, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, sizeof(struct Instance_Data) * countof(r->scene.entities));
+        vk->instance_buffer = vk_create_buffer(vk, &vk->gpu_mem, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, sizeof(struct Instance_Data) * countof(r->scene.entities));
 
         VkDescriptorBufferInfo desc_buf_info = {
             .buffer = vk->instance_buffer.handle,
@@ -1468,7 +1468,7 @@ static void scene_init(struct Render_State *r, struct VK *vk)
 
     /* Indirect command buffer init */
     {
-        vk->indirect_command_buffer = vk_create_buffer(vk, &vk->scratch_mem, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, countof(r->scene.entities) * sizeof(VkDrawIndexedIndirectCommand));
+        vk->indirect_command_buffer = vk_create_buffer(vk, &vk->gpu_mem, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, countof(r->scene.entities) * sizeof(VkDrawIndexedIndirectCommand));
     }
 
     /* Scene entities init */
