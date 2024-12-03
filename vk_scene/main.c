@@ -76,13 +76,19 @@ struct VK_Buffer_Arena {
     size_t capacity;
 };
 
+struct VK_Staging_Entry {
+    uint64_t offset_in_staging_buffer;
+
+    VkBuffer destination_buffer;
+    uint64_t offset_in_destination_buffer;
+    uint64_t size;
+
+    VkImage destination_image;
+    VkExtent3D destination_image_extent;
+};
+
 struct VK_Staging_Queue {
-    struct {
-        uint64_t offset_in_staging_buffer;
-        uint64_t offset_in_destination_buffer;
-        uint64_t size;
-        VkBuffer destination_buffer;
-    } entries[512];
+    struct VK_Staging_Entry entries[512];
     uint32_t entries_top;
 };
 
@@ -92,6 +98,12 @@ struct Mesh {
 
     uint32_t vert_count;
     uint32_t index_count;
+};
+
+struct Texture {
+    VkImage image;
+    VkImageView image_view;
+    VkExtent3D extent;
 };
 
 struct VK {
@@ -157,6 +169,8 @@ struct VK {
     struct Mesh meshes[512];
     int mesh_count;
     
+    struct Texture grid_texture;
+
     /* Descriptors */
     VkDescriptorSet global_desc;
     VkDescriptorSetLayout global_desc_layout;
@@ -421,13 +435,59 @@ static void vk_staging_queue_flush(struct VK *vk)
 
     /* Record commands for every staged entry */
     for(uint32_t i = 0; i < vk->staging_queue.entries_top; ++i) {
-        struct VkBufferCopy buffer_copy = {
-            .srcOffset = vk->staging_queue.entries[i].offset_in_staging_buffer,
-            .dstOffset = vk->staging_queue.entries[i].offset_in_destination_buffer,
-            .size = vk->staging_queue.entries[i].size
-        };
+        struct VK_Staging_Entry *entry = &vk->staging_queue.entries[i];
 
-        vkCmdCopyBuffer(cmdbuf, vk->staging_buffer.buffer.handle, vk->staging_queue.entries[i].destination_buffer, 1, &buffer_copy);
+        if(entry->destination_buffer) {
+            struct VkBufferCopy buffer_copy = {
+                .srcOffset = entry->offset_in_staging_buffer,
+                .dstOffset = entry->offset_in_destination_buffer,
+                .size = entry->size
+            };
+
+            vkCmdCopyBuffer(cmdbuf, vk->staging_buffer.buffer.handle, entry->destination_buffer, 1, &buffer_copy);
+        }
+
+        if(entry->destination_image) {
+            // NOTE: Hard-coding image format!
+
+            // TODO: Should have more flexible offset/extents for copying a region of an image,
+            //       but to fully support that we need to consider layout transitions more directly...
+            //
+            //       For now it is assumed that the image is copied in its entirety.
+
+            VkBufferImageCopy image_copy = {
+                .bufferOffset = entry->offset_in_staging_buffer,
+                .imageSubresource = {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, // TODO: This should not be hard-coded!
+                    .mipLevel = 0,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+                .imageExtent = entry->destination_image_extent
+            };
+
+            vkCmdCopyBufferToImage(cmdbuf, vk->staging_buffer.buffer.handle, entry->destination_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &image_copy);
+
+            VkImageMemoryBarrier barrier = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = entry->destination_image,
+                .subresourceRange = {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, // TODO: This should not be hard-coded!
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+                .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT
+            };
+
+            vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+        }
     }
 
     VK_CHECK(vkEndCommandBuffer(cmdbuf));
@@ -451,32 +511,54 @@ static void vk_staging_queue_flush(struct VK *vk)
     LOG_PREINIT("Finished all pending staging buffer uploads\n");
 }
 
-static void *vk_map_buffer_staged(struct VK *vk, struct VK_Buffer buffer, size_t offset, size_t size)
+static void vk_ensure_staging_buffer_capacity(struct VK *vk, size_t size)
 {
-    assert(offset + size <= buffer.size);
-
-    /* Flush the staging queue if we can't fit any more */
     const bool staging_buffer_full = size > vk->staging_buffer.capacity - vk->staging_buffer.top;
     const bool staging_queue_full = vk->staging_queue.entries_top == countof(vk->staging_queue.entries);
     if(staging_buffer_full || staging_queue_full) {
         vk_staging_queue_flush(vk);
     }
 
-    assert(size < vk->staging_buffer.capacity - vk->staging_buffer.top);
+    assert(size < vk->staging_buffer.capacity - vk->staging_buffer.top);    
+}
+
+static void vk_update_image(struct VK *vk, struct Texture texture, void *data)
+{
+    // NOTE: We are fully expecting the format to be RGBA8, hard-coded!
+    size_t size = texture.extent.width * texture.extent.height * 8;
+
+    /* Flush the staging queue if we can't fit any more */
+    vk_ensure_staging_buffer_capacity(vk, size);
 
     /* Allocate from the staging buffer */
     const uint64_t staging_buffer_offset = vk_buffer_arena_push(vk, &vk->staging_buffer, size);
+    void *mapped_mem = (char *)vk->staging_buffer_mapping + staging_buffer_offset;
 
+    /* Copy data */
+
+    /* Add entry to staging queue */
+
+}
+
+static void *vk_map_buffer_staged(struct VK *vk, struct VK_Buffer buffer, size_t offset, size_t size)
+{
+    assert(offset + size <= buffer.size);
+
+    /* Flush the staging queue if we can't fit any more */
+    vk_ensure_staging_buffer_capacity(vk, size);
+
+    /* Allocate from the staging buffer */
+    const uint64_t staging_buffer_offset = vk_buffer_arena_push(vk, &vk->staging_buffer, size);
     void *mapped_mem = (char *)vk->staging_buffer_mapping + staging_buffer_offset;
 
     /* Add entry to staging queue */
     // NOTE: Normally this should be done on unmap, but since we don't have async anything yet, this is still fine.
-    vk->staging_queue.entries[vk->staging_queue.entries_top].destination_buffer = buffer.handle;
-    vk->staging_queue.entries[vk->staging_queue.entries_top].size = size;
-    vk->staging_queue.entries[vk->staging_queue.entries_top].offset_in_staging_buffer = staging_buffer_offset;
-    vk->staging_queue.entries[vk->staging_queue.entries_top].offset_in_destination_buffer = offset;
-
-    vk->staging_queue.entries_top++;
+    vk->staging_queue.entries[vk->staging_queue.entries_top++] = (struct VK_Staging_Entry) {
+        .destination_buffer = buffer.handle,
+        .size = size,
+        .offset_in_staging_buffer = staging_buffer_offset,
+        .offset_in_destination_buffer = offset
+    };
 
     return mapped_mem;
 }
@@ -1369,6 +1451,59 @@ static struct Mesh upload_mesh_from_raw_data(struct VK *vk, const char *mesh_dat
     return mesh;
 }
 
+static struct Texture upload_texture_from_file_path(struct VK *vk, const char *path)
+{
+    int x, y, n;
+    uint8_t *data = stbi_load(path, &x, &y, &n, 4);
+    CHECK(data, "Could not load texture");
+
+    VkExtent3D extent = { x, y, 1 };
+
+    VkImageCreateInfo image_create_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = VK_FORMAT_B8G8R8A8_SRGB,
+        .extent = extent,
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+    };
+
+    struct Texture out_texture = { 
+        .extent = extent
+    };
+
+    VK_CHECK(vkCreateImage(vk->device, &image_create_info, NULL, &out_texture.image));
+    vk_push_deletable(vk, vkDestroyImage, out_texture.image);
+
+    VkMemoryRequirements mem_requirements;
+    vkGetImageMemoryRequirements(vk->device, out_texture.image, &mem_requirements);
+
+    const uint64_t buffer_base_offset = vk_mem_arena_push(vk, &vk->gpu_mem, mem_requirements);
+    vkBindImageMemory(vk->device, out_texture.image, vk->gpu_mem.allocation, buffer_base_offset);
+
+    VkImageViewCreateInfo image_view_create_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .image = out_texture.image,
+        .format = image_create_info.format,
+        .subresourceRange = {
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT
+        }
+    };
+
+    VK_CHECK(vkCreateImageView(vk->device, &image_view_create_info, NULL, &out_texture.image_view));
+    vk_push_deletable(vk, vkDestroyImageView, out_texture.image_view);
+
+    return out_texture;
+}
+
 static void scene_init(struct Render_State *r, struct VK *vk)
 {
 	vk->lit_pipeline = vk_create_pipeline_and_shaders(vk, "shaders/lit_vert.spv", "shaders/lit_frag.spv", vk->simple_piepline_layout);
@@ -1412,6 +1547,11 @@ static void scene_init(struct Render_State *r, struct VK *vk)
             
             vkUpdateDescriptorSets(vk->device, 1, &set_write, 0, NULL);
         }
+    }
+
+    /* Texture init */
+    {
+        vk->grid_texture = upload_texture_from_file_path(vk, "data/grid.png");
     }
 
     /* Uniform buffer init */
