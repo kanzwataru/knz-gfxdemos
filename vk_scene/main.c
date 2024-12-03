@@ -16,6 +16,7 @@
 #include <vulkan/vulkan.h>
 #include <SDL.h>
 #include <SDL_vulkan.h>
+#include <stb_image.h>
 
 #include <stdio.h>
 #include <stdint.h>

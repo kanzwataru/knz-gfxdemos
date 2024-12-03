@@ -4,10 +4,11 @@ project(knz-gfxdemos)
 find_package(Vulkan REQUIRED)
 find_package(SDL2 REQUIRED)
 
-include_directories(${SDL2_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/extern_lib/cglm/include)
+include_directories(${SDL2_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/extern_lib/cglm/include ${CMAKE_SOURCE_DIR}/extern_lib/stb)
+set(COMMON_SRC ${CMAKE_SOURCE_DIR}/extern_lib/stb/stb.c)
 
 function(f_add_target TARGET SRC)
-	add_executable(${TARGET} ${SRC})
+	add_executable(${TARGET} ${SRC} ${COMMON_SRC})
 	target_link_libraries(${TARGET} Vulkan::Vulkan ${SDL2_LIBRARIES})
 	
 	if(WIN32)
@@ -129,3 +130,4 @@ f_add_shader(vk_scene lit_vert vert)
 
 f_add_data(vk_scene cube.bin)
 f_add_data(vk_scene suzanne.bin)
+f_add_data(vk_scene grid.png)
