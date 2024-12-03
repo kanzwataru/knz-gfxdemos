@@ -1577,18 +1577,6 @@ static void render(struct Render_State *r, struct VK *vk)
 
 		/* update GPU data */
 		vk_update_buffer(vk, vk->global_uniform_buffer, &uniforms, 0, sizeof(uniforms));
-        vk_staging_queue_flush(vk);
-		
-		/* record commands */
-		vkCmdBeginRenderPass(cmdbuf, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
-        
-        vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->lit_pipeline);
-
-        VkBuffer buffers[] = { vk->vertex_buffer.buffer.handle };
-        VkDeviceSize offsets[] = { 0 };
-        vkCmdBindVertexBuffers(cmdbuf, 0, countof(buffers), buffers, offsets);
-        vkCmdBindIndexBuffer(cmdbuf, vk->index_buffer.buffer.handle, 0, VK_INDEX_TYPE_UINT16);
-        vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->simple_piepline_layout, 0, 1, &vk->global_desc, 0, NULL);
 
         struct Instance_Data *instance_buffer_mapped = vk_map_buffer_staged(vk, vk->instance_buffer, 0, r->scene.entities_count * sizeof(*instance_buffer_mapped));
         VkDrawIndexedIndirectCommand *indirect_command_buffer_mapped = vk_map_buffer_staged(vk, vk->indirect_command_buffer, 0, r->scene.entities_count * sizeof(*indirect_command_buffer_mapped));
@@ -1621,6 +1609,20 @@ static void render(struct Render_State *r, struct VK *vk)
                 .firstInstance = i
             };
         }
+
+        // TODO: Instead of a blocking flush, consider tying it into the draw commands
+        vk_staging_queue_flush(vk);
+		
+		/* record commands */
+		vkCmdBeginRenderPass(cmdbuf, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+        
+        vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->lit_pipeline);
+
+        VkBuffer buffers[] = { vk->vertex_buffer.buffer.handle };
+        VkDeviceSize offsets[] = { 0 };
+        vkCmdBindVertexBuffers(cmdbuf, 0, countof(buffers), buffers, offsets);
+        vkCmdBindIndexBuffer(cmdbuf, vk->index_buffer.buffer.handle, 0, VK_INDEX_TYPE_UINT16);
+        vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->simple_piepline_layout, 0, 1, &vk->global_desc, 0, NULL);
 
         vkCmdDrawIndexedIndirect(cmdbuf, vk->indirect_command_buffer.handle, 0, r->scene.entities_count, sizeof(VkDrawIndexedIndirectCommand));
 
