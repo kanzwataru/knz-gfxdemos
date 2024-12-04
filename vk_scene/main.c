@@ -1,7 +1,6 @@
 // This is still WIP!
 // We need to be drawing multiple meshes in a "scene", using GPU-driven rendering
 //
-// TODO: Add textures
 // TODO: Make textures bindless
 // TODO: Switch to BDA for all buffers (if necessary...)
 
