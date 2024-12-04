@@ -170,6 +170,7 @@ struct VK {
     int mesh_count;
     
     struct Texture grid_texture;
+    VkSampler default_sampler;
 
     /* Descriptors */
     VkDescriptorSet global_desc;
@@ -455,6 +456,29 @@ static void vk_staging_queue_flush(struct VK *vk)
             //
             //       For now it is assumed that the image is copied in its entirety.
 
+            {
+                // Transition to VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+                VkImageMemoryBarrier barrier = {
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = entry->destination_image,
+                    .subresourceRange = {
+                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, // TODO: This should not be hard-coded!
+                        .baseMipLevel = 0,
+                        .levelCount = 1,
+                        .baseArrayLayer = 0,
+                        .layerCount = 1,
+                    },
+                    .srcAccessMask = 0,
+                    .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT
+                };
+
+                vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+            }
+
             VkBufferImageCopy image_copy = {
                 .bufferOffset = entry->offset_in_staging_buffer,
                 .imageSubresource = {
@@ -468,25 +492,28 @@ static void vk_staging_queue_flush(struct VK *vk)
 
             vkCmdCopyBufferToImage(cmdbuf, vk->staging_buffer.buffer.handle, entry->destination_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &image_copy);
 
-            VkImageMemoryBarrier barrier = {
-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = entry->destination_image,
-                .subresourceRange = {
-                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, // TODO: This should not be hard-coded!
-                    .baseMipLevel = 0,
-                    .levelCount = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount = 1,
-                },
-                .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT
-            };
+            {
+                // Transition to VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                VkImageMemoryBarrier barrier = {
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = entry->destination_image,
+                    .subresourceRange = {
+                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, // TODO: This should not be hard-coded!
+                        .baseMipLevel = 0,
+                        .levelCount = 1,
+                        .baseArrayLayer = 0,
+                        .layerCount = 1,
+                    },
+                    .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT
+                };
 
-            vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+                vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+            }
         }
     }
 
@@ -525,7 +552,7 @@ static void vk_ensure_staging_buffer_capacity(struct VK *vk, size_t size)
 static void vk_update_image(struct VK *vk, struct Texture texture, void *data)
 {
     // NOTE: We are fully expecting the format to be RGBA8, hard-coded!
-    size_t size = texture.extent.width * texture.extent.height * 8;
+    size_t size = texture.extent.width * texture.extent.height * 4;
 
     /* Flush the staging queue if we can't fit any more */
     vk_ensure_staging_buffer_capacity(vk, size);
@@ -535,9 +562,14 @@ static void vk_update_image(struct VK *vk, struct Texture texture, void *data)
     void *mapped_mem = (char *)vk->staging_buffer_mapping + staging_buffer_offset;
 
     /* Copy data */
+    memcpy(mapped_mem, data, size);
 
     /* Add entry to staging queue */
-
+    vk->staging_queue.entries[vk->staging_queue.entries_top++] = (struct VK_Staging_Entry) {
+        .offset_in_staging_buffer = staging_buffer_offset,
+        .destination_image = texture.image,
+        .destination_image_extent = texture.extent
+    };
 }
 
 static void *vk_map_buffer_staged(struct VK *vk, struct VK_Buffer buffer, size_t offset, size_t size)
@@ -1274,6 +1306,12 @@ static void vk_init(struct VK *vk)
                 .descriptorCount = 1,
                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
+            },
+            {
+                .binding = 3,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT
             }
         };
 
@@ -1290,7 +1328,8 @@ static void vk_init(struct VK *vk)
         /* descriptor pool */
         VkDescriptorPoolSize sizes[] = {
             { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10 },
-            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 }
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 },
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10 }
         };
 
         VkDescriptorPoolCreateInfo pool_info = {
@@ -1460,7 +1499,11 @@ static struct Texture upload_texture_from_file_path(struct VK *vk, const char *p
 {
     int x, y, n;
     uint8_t *data = stbi_load(path, &x, &y, &n, 4);
-    CHECK(data, "Could not load texture");
+    if(!data) {
+        panic("Could not load texture");
+    };
+
+    LOG("Loaded texture from %s of size %d x %d (@%p)\n", path, x, y, data);
 
     VkExtent3D extent = { x, y, 1 };
 
@@ -1505,6 +1548,8 @@ static struct Texture upload_texture_from_file_path(struct VK *vk, const char *p
 
     VK_CHECK(vkCreateImageView(vk->device, &image_view_create_info, NULL, &out_texture.image_view));
     vk_push_deletable(vk, vkDestroyImageView, out_texture.image_view);
+
+    vk_update_image(vk, out_texture, data);
 
     return out_texture;
 }
@@ -1557,6 +1602,44 @@ static void scene_init(struct Render_State *r, struct VK *vk)
     /* Texture init */
     {
         vk->grid_texture = upload_texture_from_file_path(vk, "data/grid.png");
+
+        VkSamplerCreateInfo sampler_info = {
+            .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            .magFilter = VK_FILTER_LINEAR,
+            .minFilter = VK_FILTER_LINEAR,
+            .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            .anisotropyEnable = VK_FALSE,
+            //.maxAnisotropy = 4,
+            .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+            .unnormalizedCoordinates = VK_FALSE,
+            .compareEnable = VK_FALSE,
+            .compareOp = VK_COMPARE_OP_ALWAYS,
+            .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+            .mipLodBias = 0.0f,
+            .minLod = 0.0f,
+            .maxLod = 0.0f
+        };
+        VK_CHECK(vkCreateSampler(vk->device, &sampler_info, NULL, &vk->default_sampler));
+        vk_push_deletable(vk, vkDestroySampler, vk->default_sampler);
+
+        VkDescriptorImageInfo desc_image_info = {
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .imageView = vk->grid_texture.image_view,
+            .sampler = vk->default_sampler,
+        };
+
+        VkWriteDescriptorSet set_write = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstBinding = 3,
+            .dstSet = vk->global_desc,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &desc_image_info
+        };
+        
+        vkUpdateDescriptorSets(vk->device, 1, &set_write, 0, NULL);
     }
 
     /* Uniform buffer init */
