@@ -1,7 +1,6 @@
 // This is still WIP!
 // We need to be drawing multiple meshes in a "scene", using GPU-driven rendering
 //
-// TODO: Make textures bindless
 // TODO: Switch to BDA for all buffers (if necessary...)
 
 #include <vulkan/vulkan_core.h>
@@ -32,6 +31,8 @@
 #define GPU_SCRATCH_POOL_SIZE (64 * 1024 * 1024)
 #define GPU_VRAM_POOL_SIZE    (128 * 1024 * 1024)
 #define GPU_STAGING_POOL_SIZE (16 * 1024 * 1024)
+
+#define TEXTURE_DESCRIPTOR_COUNT 32
 
 #define WITH_LOGGING 1
 
@@ -208,6 +209,10 @@ struct Render_State {
 
 struct Instance_Data {
 	mat4s model_matrix;
+    uint32_t texture_index;
+    uint32_t padding_0;
+    uint32_t padding_1;
+    uint32_t padding_2;
 };
 
 struct Global_Uniform_Data {
@@ -817,13 +822,21 @@ static void vk_init(struct VK *vk)
 			layer_count = 0;
 		}
 
+        /* application info */
+        VkApplicationInfo application_info = {
+            .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+            .pApplicationName = "vk_scene",
+            .apiVersion = VK_API_VERSION_1_3
+        };
+
 		/* instance */
 		VkInstanceCreateInfo instance_create_info = {
 			.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
 			.enabledLayerCount = layer_count,
 			.ppEnabledLayerNames = layer_names,
 			.enabledExtensionCount = extension_count,
-			.ppEnabledExtensionNames = extension_names
+			.ppEnabledExtensionNames = extension_names,
+            .pApplicationInfo = &application_info
 		};
 
 		VK_CHECK(vkCreateInstance(&instance_create_info, NULL, &vk->instance));
@@ -973,7 +986,7 @@ static void vk_init(struct VK *vk)
 	{
 		/* extensions */
 		const char *extension_names[] = {
-			VK_KHR_SWAPCHAIN_EXTENSION_NAME
+			VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 		};
 		uint32_t extension_count = countof(extension_names);
 
@@ -1019,13 +1032,27 @@ static void vk_init(struct VK *vk)
         };
 
 		/* create */
+        VkPhysicalDeviceDescriptorIndexingFeatures descriptor_indexing_features = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES,
+            .shaderSampledImageArrayNonUniformIndexing = VK_TRUE,
+            .runtimeDescriptorArray = VK_TRUE,
+            .descriptorBindingVariableDescriptorCount = VK_TRUE,
+            
+            // TODO: May not need these, if we put our bindless textures on a separate descriptor set
+            .descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE,
+            .descriptorBindingUniformTexelBufferUpdateAfterBind = VK_TRUE,
+            .descriptorBindingPartiallyBound = VK_TRUE,
+            .descriptorBindingUpdateUnusedWhilePending = VK_TRUE
+        };
+
 		VkDeviceCreateInfo create_info = {
 			.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 			.queueCreateInfoCount = queue_count,
 			.pQueueCreateInfos = queue_infos,
 			.enabledExtensionCount = extension_count,
 			.ppEnabledExtensionNames = extension_names,
-            .pEnabledFeatures = &device_features
+            .pEnabledFeatures = &device_features,
+            .pNext = &descriptor_indexing_features
 		};
 
 		VK_CHECK(vkCreateDevice(vk->physical_device, &create_info, NULL, &vk->device));
@@ -1308,17 +1335,31 @@ static void vk_init(struct VK *vk)
             },
             {
                 .binding = 3,
-                .descriptorCount = 1,
+                .descriptorCount = TEXTURE_DESCRIPTOR_COUNT,
                 .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                 .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT
             }
+        };
+
+        VkDescriptorBindingFlags binding_flags[] = {
+            0,
+            0,
+            0,
+            VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT
+        };
+
+        VkDescriptorSetLayoutBindingFlagsCreateInfo binding_flags_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+            .bindingCount = 4,
+            .pBindingFlags = binding_flags
         };
 
         VkDescriptorSetLayoutCreateInfo desc_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
             .bindingCount = countof(bindings),
             .pBindings = bindings,
-            .flags = 0
+            .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+            .pNext = &binding_flags_info
         };
 
         VK_CHECK(vkCreateDescriptorSetLayout(vk->device, &desc_info, NULL, &vk->global_desc_layout));
@@ -1328,12 +1369,12 @@ static void vk_init(struct VK *vk)
         VkDescriptorPoolSize sizes[] = {
             { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10 },
             { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 },
-            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10 }
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, TEXTURE_DESCRIPTOR_COUNT }
         };
 
         VkDescriptorPoolCreateInfo pool_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            .flags = 0,
+            .flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
             .maxSets = 10,
             .poolSizeCount = countof(sizes),
             .pPoolSizes = sizes
@@ -1344,11 +1385,22 @@ static void vk_init(struct VK *vk)
 
         /* descriptors */
         // NOTE: The actual buffer is created way after in scene_init, so this just allocates the descriptor for use later
+        uint32_t variable_descriptor_counts[] = {
+            TEXTURE_DESCRIPTOR_COUNT
+        };
+
+        VkDescriptorSetVariableDescriptorCountAllocateInfo descriptor_count_alloc_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
+            .descriptorSetCount = countof(variable_descriptor_counts),
+            .pDescriptorCounts = variable_descriptor_counts
+        };
+
         VkDescriptorSetAllocateInfo alloc_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
             .descriptorPool = vk->desc_pool,
             .descriptorSetCount = 1,
             .pSetLayouts = &vk->global_desc_layout,
+            .pNext = &descriptor_count_alloc_info
         };
         
         VK_CHECK(vkAllocateDescriptorSets(vk->device, &alloc_info, &vk->global_desc));
@@ -1600,7 +1652,18 @@ static void scene_init(struct Render_State *r, struct VK *vk)
 
     /* Texture init */
     {
-        vk->grid_texture = upload_texture_from_file_path(vk, "data/grid.png");
+        const char *texture_paths[] = {
+            "data/grid.png",
+            "data/noise.tga"
+        };
+
+        struct Texture textures[countof(texture_paths)];
+
+        for(int i = 0; i < countof(texture_paths); ++i) {
+            textures[i] = upload_texture_from_file_path(vk, texture_paths[i]);
+        }
+
+        struct Texture dummy_texture = upload_texture_from_file_path(vk, "data/dummy.tga");
 
         VkSamplerCreateInfo sampler_info = {
             .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
@@ -1623,19 +1686,32 @@ static void scene_init(struct Render_State *r, struct VK *vk)
         VK_CHECK(vkCreateSampler(vk->device, &sampler_info, NULL, &vk->default_sampler));
         vk_push_deletable(vk, vkDestroySampler, vk->default_sampler);
 
-        VkDescriptorImageInfo desc_image_info = {
-            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .imageView = vk->grid_texture.image_view,
-            .sampler = vk->default_sampler,
-        };
+        VkDescriptorImageInfo desc_image_info[TEXTURE_DESCRIPTOR_COUNT];
+
+        for(int i = 0; i < countof(textures); ++i) {
+            desc_image_info[i] = (VkDescriptorImageInfo) {
+                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .imageView = textures[i].image_view,
+                .sampler = vk->default_sampler,
+            };
+        }
+
+        for(int i = countof(textures); i < countof(desc_image_info); ++i) {
+            desc_image_info[i] = (VkDescriptorImageInfo) {
+                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .imageView = dummy_texture.image_view,
+                .sampler = vk->default_sampler,
+            };
+        }
 
         VkWriteDescriptorSet set_write = {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .dstBinding = 3,
+            .dstArrayElement = 0,
             .dstSet = vk->global_desc,
-            .descriptorCount = 1,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .pImageInfo = &desc_image_info
+            .descriptorCount = countof(desc_image_info),
+            .pImageInfo = desc_image_info
         };
         
         vkUpdateDescriptorSets(vk->device, 1, &set_write, 0, NULL);
@@ -1812,6 +1888,7 @@ static void render(struct Render_State *r, struct VK *vk)
 
             *instance_data = (struct Instance_Data) {
                 .model_matrix = model_matrix,
+                .texture_index = i
             };
 
             struct Mesh *mesh = &vk->meshes[entity->mesh_idx];

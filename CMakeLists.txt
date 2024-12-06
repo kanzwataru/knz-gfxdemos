@@ -130,4 +130,7 @@ f_add_shader(vk_scene lit_vert vert)
 
 f_add_data(vk_scene cube.bin)
 f_add_data(vk_scene suzanne.bin)
+
 f_add_data(vk_scene grid.png)
+f_add_data(vk_scene noise.tga)
+f_add_data(vk_scene dummy.tga)

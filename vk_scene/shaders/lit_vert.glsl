@@ -8,6 +8,7 @@ struct Vertex {
 
 layout (location = 0) out vec3 out_world_normal;
 layout (location = 1) out vec2 out_uv;
+layout (location = 2) out flat uint out_instance_id;
 
 layout (set = 0, binding = 0) uniform Global_Uniforms {
     mat4 view_mat;
@@ -17,6 +18,10 @@ layout (set = 0, binding = 0) uniform Global_Uniforms {
 
 struct Instance_Data {
     mat4 model_mat;
+    uint texture_id;
+    uint padding_0;
+    uint padding_1;
+    uint padding_2;
 };
 
 layout (set = 0, binding = 1) readonly buffer Instance_Data_Buffer {
@@ -50,4 +55,6 @@ void main() {
     // NOTE: This assumes no non-uniform scaling
     out_world_normal = (instance.model_mat * vec4(v.normal, 0.0)).xyz;
     out_world_normal = normalize(out_world_normal);
+
+    out_instance_id = gl_InstanceIndex;
 }
